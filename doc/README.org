@@ -14,6 +14,10 @@
   proposals or more never catches up; that needs state sync.
 - =highest_vote_round= is not persisted. =diem/pacemaker.go:LocalTimeoutRound= has
   no =save_consensus_state()=, so a restarted replica can vote twice in a round.
+- Leaders rotate round-robin only. The paper's reputation election (3.7) is left
+  out, so a crashed replica costs three rounds in every rotation: its own two, and
+  the one before, whose votes go to it. The reputation code is on the branch
+  =archive/reputation-leader=.
 - Keys are seeded. Without =-keys=, every replica derives the same insecure key
   set (=diemcrypto/ecdsa.go:SeededKeys=).
 - No equivocation evidence. Conflicting messages from one replica are not

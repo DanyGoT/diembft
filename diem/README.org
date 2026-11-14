@@ -19,7 +19,7 @@ diem/
   blocktree.go     3.3 Block-tree — pending blocks, vote buckets, QC formation
   safety.go        3.4 Safety — the voting rules and the only key holder
   pacemaker.go     3.5 Pacemaker — round advance, timeouts, TC formation
-  leader.go        3.7 LeaderElection — round-robin and the reputation scheme
+  leader.go        3.7 LeaderElection — round-robin, two rounds per leader
   verify.go        everything checked before a message reaches the core
   types.go         NewBlock; the helpers over a single message are methods in
                    proto/diempb/methods.go
@@ -59,7 +59,8 @@ plumbing around them.
   rule
 - Certificate formation — =blocktree.go=, =ProcessVote=
 - Round change — =pacemaker.go= in full
-- Leader selection — =leader.go=, round-robin plus the reputation scheme
+- Leader selection — =leader.go=, round-robin only; the paper's reputation
+  scheme is left out (=PSEUDOCODE.org=, 3.7)
 - Checked before anything touches state — =verify.go=
 
 * Verification
@@ -73,9 +74,10 @@ fails is dropped before it reaches the core. What stays in =Core= is what depend
 this replica's current beliefs: whether the sender leads this round, and
 whether the message is too far ahead to buffer.
 
-The leader check cannot move to the edge at all, because =LeaderElection= has a
-reputation path keyed on committed blocks, so the leader is a function of
-protocol state.
+Who leads a round is a function of the round alone (=leader.go:GetLeader=), so
+the sender and author checks could move to the edge. They stay in =Core= next to
+the round check, which does need this replica's round, because the paper puts
+all three in =process_proposal_msg= (=core.go:OnProposal=).
 
 =core.go= therefore holds exactly one crypto call — =Sign=, when this replica
 proposes. =Safety= re-verifies what it is about to sign over, which is

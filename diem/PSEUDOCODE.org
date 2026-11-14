@@ -50,12 +50,12 @@ Feed the certificate to the block tree, then to leader election, then to the
 pacemaker.
 
 - Implemented :: =core.go:processCertificateQC=.
-- Differs :: only in two details. A nil guard in =processCertificateQC=, because
-  =HighCommitQC= is optional on the wire. And the paper's
+- Differs :: in three details. A nil guard in =processCertificateQC=, because
+  =HighCommitQC= is optional on the wire. The paper's
   =Pacemaker.advance_round(qc.vote_info.round)= is =AdvanceRoundQC(qc)= here —
-  see *Where the paper is self-contradictory*, item 1. The order is the
-  paper's, and it matters: =LeaderElection.UpdateLeaders= reads the round the
-  certificate arrived in, so it must run before the pacemaker advances past it.
+  see *Where the paper is self-contradictory*, item 1. And the middle step,
+  =LeaderElection.update_leaders=, is gone: leader election is round-robin only
+  (3.7), so there is nothing to update.
 
 ** process_proposal_msg(P)
 
@@ -69,9 +69,10 @@ then speculate and insert, then vote.
   happens: signatures, quorum sizes, certificate well-formedness and signer
   order are checked at the edge (=diemnet/server.go:VerifyInterceptor=,
   =verify.go:VerifyProposal=) before the message reaches the core. The three checks
-  that remain here are the paper's own, and the leader check could not move
-  anyway — =GetLeader= has a reputation path keyed on committed blocks, so a
-  round's leader is a function of protocol state.
+  that remain here are the paper's own. The round check needs the round this
+  replica is in, which is protocol state. The sender and author checks need
+  only the block's round (=leader.go:GetLeader=), so they could move to the
+  edge; they stay next to the round check, where the paper puts them.
 
 ** process_timeout_msg(M)
 
@@ -156,7 +157,8 @@ below it.
 
 ** committed_block(block_id)
 
-A committed block by id, which is what =LeaderElection= walks back over.
+A committed block by id, which the paper's =LeaderElection= walks back over.
+Here it answers a peer fetching a block it missed (=core.go:Block=).
 
 - Implemented :: =ledger.go:CommittedBlock=.
 - Faithful :: no deviation, except that the answer is bounded by =History=
@@ -446,47 +448,31 @@ round-robin with two rounds per leader:
 validators[(round / 2) mod |validators|]
 #+end_example
 
-- Implemented :: =leader.go:GetLeader=.
-- Faithful :: no deviation. =validators= is sorted at construction
-  (=leader.go:NewLeaderElection=) so every replica indexes the same rotation.
+- Implemented :: =leader.go:GetLeader=, round-robin only.
+- Differs :: there is no reputation path. =update_leaders= elects a reputation
+  leader for round r+2 only when the QC for round r arrives while the replica
+  is in round r+1. Whether it does depends on message order, so a replica that
+  sees the QC late falls back to round-robin while the others do not, and the
+  round can time out. Here every replica derives the leader from the round alone.
+  =validators= is sorted at construction (=leader.go:NewLeaderElection=) so
+  every replica indexes the same rotation.
 
-** update_leaders(qc)
+** update_leaders(qc), elect_reputation_leader(qc)
 
-Elect the leader of the round after next, but only when the certificate shows a
-contiguous 2-chain that this replica is exactly one round past.
-
-- Implemented :: =leader.go:UpdateLeaders=; the predicate is its
-  =extendedRound= and =qcRound= test.
-- Differs :: three additions, none of them to the predicate. A nil guard; the
-  write happens only when the election succeeded (see below); and it drops
-  entries for rounds already left behind, which the paper's map would accumulate
-  forever.
-
-** elect_reputation_leader(qc)
-
-Walk back over committed blocks collecting the signers of the last
-=window_size= certificates and the authors of the last =exclude_size= blocks,
-then pick deterministically from the difference, seeded on the certificate's
-round.
-
-- Implemented :: =leader.go:electReputationLeader=;
-  =pick_one(seed)= is =pick=, which hashes the round rather than
-  taking it modulo the candidate count, so consecutive seeds spread across the
-  set.
-- Differs :: two termination guards the paper's loop lacks. Two =CommittedBlock=
-  lookups in =electReputationLeader= stop when the ledger no longer holds the
-  next block back, which happens both early in a run and once =History= has
-  dropped old blocks; the paper's loop runs off the end of a short history. It
-  also returns "no election" when the difference is empty — the paper argues it
-  is non-empty, which holds only once the window is full — and round-robin then
-  stands, the same fallback a replica that saw no commit uses.
-- Reproduced faithfully, and worth knowing :: the walk steps over *alternating*
-  committed blocks, not consecutive ones. Each iteration looks up
-  =current_qc.vote_info.parent_id= and then sets =current_qc <-
-  current_block.qc=, which skips a block per step. That is the algorithm as the
-  paper specifies it.
+Not implemented; see *Procedures with no counterpart*.
 
 * Procedures with no counterpart
+
+- =update_leaders(qc)= and =elect_reputation_leader(qc)= (3.7) :: the
+  reputation scheme. It walks back over committed blocks, collects the signers
+  of the last =window_size= certificates and the authors of the last
+  =exclude_size= blocks, and picks from the difference. Left out because its
+  trigger depends on message order (see =get_leader=). Without it, a crashed
+  replica costs three rounds in every rotation: its own two, and the one
+  before, whose votes go to it. The crash bounds of Cor 2 and Property 5 do
+  not hold (=INVARIANTS.org=). The implementation,
+  with the termination guards the paper's loop lacks, is on the branch
+  =archive/reputation-leader=.
 
 - =save_consensus_state()= (3.5, called from =local_timeout_round=) :: the two
   counters it would persist are =Safety='s (=safety.go:highestVoteRound= and
@@ -549,9 +535,9 @@ Section 3 is a protocol, not a program. These are what it takes to run one.
   are answered under the replica's lock, from the pending tree or the
   committed blocks.
 - Retention :: =ledger.go:History= and =forget=.
-  The paper's ledger is unbounded; =committed_block= must still answer for
-  everything =elect_reputation_leader= walks back over, so the bound is what
-  =electReputationLeader='s termination guard exists for.
+  The paper's ledger is unbounded. Here =committed_block= answers peers that
+  fetch a block they missed, so block sync cannot bring back a replica that has
+  fallen further behind than =History= blocks.
 - The seams :: =seams.go:Transport=, where the paper writes "send" and
   "broadcast", plus =Crypto= and =Clock=, which the paper assumes.
 - Domain-separated digests :: =proto/diempb/hash.go:domainBlock=,
@@ -624,4 +610,4 @@ the protocol; all of it is the kind of thing that costs a reader time.
   message around it, although the procedure is declared as returning nil on
   refusal. Guarded in =pacemaker.go:LocalTimeoutRound=.
 - =reputation_leaders= is written to and never read down or pruned, so it grows
-  for the lifetime of the replica. Pruned in =leader.go:UpdateLeaders=.
+  for the lifetime of the replica. Moot here: 3.7 is round-robin only.

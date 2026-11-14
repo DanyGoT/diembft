@@ -56,6 +56,10 @@ Terse restatement of what the DiemBFT proofs need. Code pointers are
 - Property 4: honest agreed leaders for r, r+1, r+2 after GST => every honest replica
   locally direct-commits B_r within 7\Delta.
 ** Leader reputation (t = actual faults)
+Not implemented: leader election is round-robin only (=leader.go:GetLeader=). Lemma 11
+is about round-robin leaders; the rest of this section is not claimed for this code.
+The crash bounds (Cor 2, Property 5) are lost outright: a crashed replica costs three
+rounds in every rotation, its own two and the one before, whose votes go to it.
 - Requirements: t-leader-utilization, liveness, t-chain-quality. Reputation is a
   deterministic function of committed history, so after GST replicas disagree on a
   leader only a small number of times.
@@ -95,7 +99,7 @@ Terse restatement of what the DiemBFT proofs need. Code pointers are
 | round entry | enter qc.round+1 / tc.round+1, never backwards | =pacemaker.go:AdvanceRoundQC=, =AdvanceRoundTC= |
 | Bracha amplification | f+1 timeouts for r => time out of r; quorum => TC; counted once per sender | =pacemaker.go:ProcessRemoteTimeout= |
 | round timer | paper: 4\Delta or \alpha+\beta commit_gap; code: capped backoff, grown on entering a round on a TC, reset on QC | =pacemaker.go:AdvanceRoundTC=, =AdvanceRoundQC=, =Backoff= |
-| leader election | reputation path only on fresh 2-chain QC; else round-robin, two rounds per leader | =leader.go:UpdateLeaders=, =GetLeader=, =electReputationLeader=, =pick= |
+| leader election | paper: reputation path only on fresh 2-chain QC, else round-robin; code: round-robin only, two rounds per leader | =leader.go:GetLeader= |
 | deterministic ledger | speculate/commit deterministic; commit prunes forks below | =ledger.go:Speculate=, =Commit= |
 
 * 3. HotStuff (PODC'19): 3-chain basic/chained, which DiemBFT generalises
@@ -134,10 +138,12 @@ Lemma numbers here are DiemBFT's.
   is above it, safe but not what the paper's liveness counts assume.
 - Genesis QC carries no quorum: a round-0 certificate is accepted only as the exact
   hardcoded =genesis.go:genesisQC= (=verify.go:VerifyQC=), by design.
-- Leader election: exclude_size in [f, 2f] and window_size large enough that
-  active \ last_authors is non-empty are config assumptions; the code falls back to
-  round-robin on an empty difference rather than enforcing them
-  (=leader.go:electReputationLeader=, =core.go:New= defaults).
+- Leader election is round-robin only (=leader.go:GetLeader=), so the reputation
+  results (Lemmas 10, 12, 14, Theorem 13, Cor 1-2, Property 5) are not claimed, and a
+  crashed replica costs three rounds in every rotation: its own two, and the one
+  before, whose votes go to it. The paper's scheme made
+  replicas disagree on the leader under reordering (DiemBFT v4 3.7 update_leaders);
+  it is kept on the branch =archive/reputation-leader=.
 - =Backoff= is capped; liveness needs the cap above the post-GST round time.
 - Lemma 7 / Lemma 8 rely on the vote-lead bound (=core.go:maxRoundLead=, a memory
   bound) and dropping of timeouts for past rounds not discarding messages an honest
