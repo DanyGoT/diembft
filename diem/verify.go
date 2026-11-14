@@ -12,11 +12,6 @@ import (
 // what lets it run on the network's handler goroutines, before a message
 // reaches the core.
 //
-// The leader check cannot live here: LeaderElection.GetLeader (3.7) has a
-// reputation path keyed on the committed blocks, so a round's leader is a
-// function of protocol state. It stays where the paper puts it, inside
-// process_proposal_msg.
-//
 // It is also the edge that makes a wire message safe to read without checks:
 // every hash field of a message it accepts is exactly hashLen bytes, and a
 // block's id is the one recomputed from its fields, so no digest from the wire
@@ -128,7 +123,8 @@ func (v *Verifier) VerifyTC(tc *diempb.TimeoutCert) bool {
 // VerifyProposal reports whether p is well formed and validly signed by its
 // sender, whether its block carries the id its fields hash to, and whether
 // every certificate it carries holds up. Whether its author leads the round is
-// decided in Core; see the type comment.
+// checked in Core next to the round check, as DiemBFT v4 3.1
+// process_proposal_msg does.
 func (v *Verifier) VerifyProposal(p *diempb.ProposalMsg) bool {
 	if !p.WellFormed() {
 		return false

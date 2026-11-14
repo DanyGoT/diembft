@@ -8,7 +8,7 @@ import (
 
 // MemLedger is the in-memory ledger (paper 3.2): a branching tree of
 // speculative states extending the last committed one, plus the committed
-// blocks LeaderElection walks back over.
+// blocks a lagging peer may still fetch.
 //
 // The speculation tree is what lets a vote certify an execution result and not
 // just an ordering. A replica whose VM diverges speculates a different state
@@ -24,10 +24,9 @@ type MemLedger struct {
 	// "higher level logic" the Ledger module is the gateway for.
 	OnCommit func(*diempb.Block)
 
-	// History bounds the committed blocks kept for LeaderElection, which walks
-	// back window_size blocks and far enough to collect exclude_size authors.
-	// A persistent ledger store would keep them all; this one is a prototype
-	// and must not grow without bound during a long run.
+	// History bounds the committed blocks kept for peers that fetch a block
+	// they missed. A persistent ledger store would keep them all; this one is
+	// a prototype and must not grow without bound during a long run.
 	History int
 
 	pending   map[string]speculated

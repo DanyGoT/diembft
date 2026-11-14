@@ -44,15 +44,6 @@ func qcWith(vi *diempb.VoteInfo, commitState []byte) *diempb.QuorumCert {
 	}.Build()
 }
 
-// sigs builds signatures with the given signers and an empty body.
-func sigs(signers ...uint32) []*diempb.Signature {
-	out := make([]*diempb.Signature, len(signers))
-	for i, s := range signers {
-		out[i] = diempb.Signature_builder{Signer: s}.Build()
-	}
-	return out
-}
-
 func orZero(h []byte) []byte {
 	if h == nil {
 		return zeroHash[:]
