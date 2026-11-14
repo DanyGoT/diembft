@@ -38,9 +38,6 @@ type sim struct {
 const (
 	simRoundBase = 100 * time.Millisecond
 	simRoundMax  = 10 * time.Second
-	// simKick is what the clock advances by when the queue runs dry, generous
-	// enough to fire a timer however far its backoff has grown.
-	simKick = 64 * simRoundBase
 )
 
 func newSim(t *testing.T, n int, down ...uint32) *sim {
@@ -161,16 +158,29 @@ func (s *sim) run(steps int) {
 		}
 	}
 	for range steps {
-		if len(s.queue) == 0 {
-			s.clock.Advance(simKick)
-			if len(s.queue) == 0 {
-				return
-			}
+		if len(s.queue) == 0 && !s.idle() {
+			return
 		}
 		f := s.queue[0]
 		s.queue = s.queue[1:]
 		f()
 	}
+}
+
+// idle fires timers one deadline at a time until one queues a message, and
+// reports whether one did. Every timer is armed for at most simRoundMax, so
+// each one pending fires within that bound. Stopping there ends a timer that
+// keeps re-arming without sending.
+func (s *sim) idle() bool {
+	until := s.clock.Now().Add(simRoundMax)
+	for len(s.queue) == 0 {
+		next := s.clock.earliest(until)
+		if next == nil {
+			return false
+		}
+		s.clock.Advance(next.deadline.Sub(s.clock.Now()))
+	}
+	return true
 }
 
 type simNet struct {
@@ -285,6 +295,26 @@ func TestCrashedLeaderRecovers(t *testing.T) {
 		if r := s.commits[id][0].GetRound(); r == 1 {
 			t.Fatalf("replica %d committed round 1, but its leader was crashed", id)
 		}
+	}
+}
+
+// TestIdleFiresOneDeadline leaves replica 1 alone, so it can only time out.
+// Its timer re-arms at the same duration every round it stays in, and an idle
+// step that fires it more than once floods the queue with timeouts.
+func TestIdleFiresOneDeadline(t *testing.T) {
+	s := newSim(t, 4, 2, 3, 4)
+	sent := 0
+	s.tamper = func(to uint32, m any) []any {
+		if _, ok := m.(*diempb.TimeoutMsg); ok && to == 1 {
+			sent++
+		}
+		return []any{m}
+	}
+	const steps = 10
+	s.run(steps)
+
+	if sent == 0 || sent > steps {
+		t.Fatalf("replica 1 sent %d timeouts in %d steps, want one per idle step", sent, steps)
 	}
 }
 
