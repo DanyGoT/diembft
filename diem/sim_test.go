@@ -26,6 +26,7 @@ type sim struct {
 
 	queue    []func()
 	rejected int
+	fetches  map[string]int // block requests per block id
 
 	// tamper, if set, stands between a sender and the network: it turns one
 	// message for one replica into whatever that replica receives instead.
@@ -53,6 +54,7 @@ func newSim(t *testing.T, n int, down ...uint32) *sim {
 		pools:   map[uint32]*fifoPool{},
 		commits: map[uint32][]*diempb.Block{},
 		down:    map[uint32]bool{},
+		fetches: map[string]int{},
 	}
 	for _, id := range down {
 		s.down[id] = true
@@ -186,6 +188,7 @@ func (n *simNet) Timeout(m *diempb.TimeoutMsg)      { n.s.broadcast(m) }
 // the first block that passes the requester's check: the quorum call of
 // diemnet, in a fixed order.
 func (n *simNet) RequestBlock(id []byte) {
+	n.s.fetches[string(id)]++
 	n.s.queue = append(n.s.queue, func() {
 		for _, peer := range n.s.live() {
 			if b := n.s.cores[peer].Block(id); n.s.vers[n.id].VerifyBlock(b, id) {
@@ -459,7 +462,12 @@ func proposalTo(to uint32, round uint64, f func(any) []any) func(uint32, any) []
 // TestDroppedProposalsRecover loses a run of consecutive proposals for replica
 // 4, from round 3 on. It must fetch the whole gap, one block at a time, and
 // commit past it with the others.
+//
+// A block is requested by the walk and again by any proposal that arrives
+// while it is the oldest one missing. A walk per proposal instead requests the
+// bottom of a long gap once for every proposal above it.
 func TestDroppedProposalsRecover(t *testing.T) {
+	const maxFetches = 3
 	for _, gap := range []uint64{1, 2, defaultHistory / 4} {
 		t.Run(fmt.Sprint(gap), func(t *testing.T) {
 			s := newSim(t, 4)
@@ -481,6 +489,13 @@ func TestDroppedProposalsRecover(t *testing.T) {
 			s.checkProgress(int(gap) + 8)
 			s.checkAgreement()
 			s.checkChained()
+			most := 0
+			for _, n := range s.fetches {
+				most = max(most, n)
+			}
+			if most > maxFetches {
+				t.Fatalf("a block was requested %d times, want at most %d", most, maxFetches)
+			}
 		})
 	}
 }

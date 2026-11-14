@@ -113,6 +113,14 @@ func (l *MemLedger) Missing(blockID []byte) []byte {
 	}
 }
 
+// Known reports whether the block is held, speculated or committed here.
+func (l *MemLedger) Known(blockID []byte) bool {
+	_, held := l.held[string(blockID)]
+	_, pending := l.pending[string(blockID)]
+	_, committed := l.committed[string(blockID)]
+	return held || pending || committed
+}
+
 func (l *MemLedger) commitRound() uint64 { return l.committed[l.commitID].GetRound() }
 
 // PendingState is the speculated state for a block. The last committed block

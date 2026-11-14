@@ -174,8 +174,13 @@ func (c *Core) Block(id []byte) *diempb.Block {
 // OnBlock inserts a block fetched from a peer. The edge has checked that its
 // recomputed id is the one this replica asked for, and that id came from a
 // verified certificate, so it is the block a quorum voted on.
+//
+// A block the ledger already knows is dropped. It answers a request that was
+// sent again, and inserting it twice would start a second walk down the same
+// gap. The ledger is asked, not the tree: the tree prunes on every commit
+// certificate even while the gap keeps the ledger from committing.
 func (c *Core) OnBlock(b *diempb.Block) {
-	if c.running {
+	if c.running && !c.ledger.Known(b.GetId()) {
 		c.insert(b)
 	}
 }
