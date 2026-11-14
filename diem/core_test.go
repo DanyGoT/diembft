@@ -339,17 +339,6 @@ func TestCoreDropsVotesForPastRounds(t *testing.T) {
 	}
 }
 
-func TestNewRejectsHistoryShorterThanReputationWalk(t *testing.T) {
-	ledger := NewMemLedger()
-	ledger.History = defaultWindowSize
-	defer func() {
-		if recover() == nil {
-			t.Fatal("New accepted a ledger that forgets blocks the reputation walk reads")
-		}
-	}()
-	New(Config{ID: 1, Validators: []uint32{1, 2, 3, 4}, Ledger: ledger})
-}
-
 // TestCoreIgnoresForgedGenesisCommit replays the attack end to end: a valid
 // timeout re-wrapped around a forged round-0 commit certificate. No signature
 // covers a timeout's high_commit_qc, so only the Verifier stands between it and

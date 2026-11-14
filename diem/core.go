@@ -1,7 +1,6 @@
 package diem
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/DanyGoT/diembft/proto/diempb"
@@ -29,7 +28,7 @@ type Core struct {
 }
 
 // Config is everything a Core needs. Every field is required except
-// MemPool, WindowSize and ExcludeSize.
+// MemPool.
 type Config struct {
 	ID         uint32
 	Validators []uint32
@@ -48,12 +47,6 @@ type Config struct {
 	// MemPool supplies the payload for a leader's proposal (paper 3.6).
 	// Nil proposes empty blocks, which still commits the pipeline below them.
 	MemPool MemPool
-
-	// WindowSize is how far back LeaderElection reads the active set;
-	// ExcludeSize is how many recent commit authors it holds out, which the
-	// paper puts between f and 2f. Zero picks the defaults below.
-	WindowSize  int
-	ExcludeSize int
 }
 
 // State is a scalar snapshot of this replica's progress.
@@ -71,31 +64,17 @@ type State struct {
 }
 
 // New wires the modules together. The dependency order is the paper's: the
-// block tree stands on the ledger, Safety on the block tree, the Pacemaker on
-// both, and LeaderElection on the Pacemaker's round.
+// block tree stands on the ledger, Safety on the block tree, and the
+// Pacemaker on both.
 func New(cfg Config) *Core {
 	n := len(cfg.Validators)
 	quorum := QuorumSize(n)
 	faulty := Faulty(n)
 
-	window, exclude := cfg.WindowSize, cfg.ExcludeSize
-	if window == 0 {
-		window = defaultWindowSize
-	}
-	if exclude == 0 {
-		exclude = max(faulty, 1)
-	}
-	// DiemBFT 3.7 elect_reputation_leader walks back window_size blocks and
-	// until exclude_size authors are found; a ledger that forgets them first
-	// silently turns every election into round-robin.
-	if window+exclude > cfg.Ledger.History {
-		panic(fmt.Sprintf("diem: window %d + exclude %d exceeds ledger history %d", window, exclude, cfg.Ledger.History))
-	}
-
 	tree := NewBlockTree(cfg.ID, quorum, cfg.Ledger, cfg.Crypto)
 	safety := NewSafety(cfg.ID, NewVerifier(cfg.Crypto, quorum), cfg.Crypto, cfg.Ledger, tree)
 	pacemaker := NewPacemaker(quorum, faulty, cfg.Clock, cfg.Backoff, cfg.Lock, cfg.Transport, safety, tree)
-	leaders := NewLeaderElection(cfg.Validators, window, exclude, cfg.Ledger, pacemaker)
+	leaders := NewLeaderElection(cfg.Validators)
 
 	return &Core{
 		id:     cfg.ID,
@@ -111,11 +90,6 @@ func New(cfg Config) *Core {
 		leaders:   leaders,
 	}
 }
-
-// defaultWindowSize is how many committed blocks the reputation scheme reads
-// back over. Large enough that a replica missing from the active set really
-// has been quiet, small enough to stay inside the ledger's retention.
-const defaultWindowSize = 10
 
 // maxRoundLead is how far ahead of the current round an inbound vote may claim
 // before this replica stops accumulating it. A vote is bucketed by the digest
@@ -185,16 +159,15 @@ func (c *Core) OnBlock(b *diempb.Block) {
 	}
 }
 
-// processCertificateQC is the paper's process_certificate_qc. The order
-// matters: LeaderElection reads the round the certificate arrived in, so it
-// must run before the Pacemaker advances past it. It reports whether the
-// round moved.
+// processCertificateQC is the paper's process_certificate_qc. It reports
+// whether the round moved. DiemBFT v4 3.1 process_certificate_qc calls
+// LeaderElection.update_leaders between the two steps; round-robin has
+// nothing to update.
 func (c *Core) processCertificateQC(qc *diempb.QuorumCert) bool {
 	if qc == nil {
 		return false
 	}
 	c.tree.ProcessQC(qc)
-	c.leaders.UpdateLeaders(qc)
 	return c.pacemaker.AdvanceRoundQC(qc)
 }
 
@@ -210,9 +183,6 @@ func (c *Core) OnProposal(p *diempb.ProposalMsg) {
 	c.processCertificateQC(p.GetHighCommitQc())
 	c.pacemaker.AdvanceRoundTC(p.GetLastRoundTc())
 
-	// The one message check that cannot move to the edge: GetLeader (3.7) reads
-	// the committed blocks for its reputation path, so who leads a round is a
-	// function of protocol state, not of the round number.
 	round := c.pacemaker.CurrentRound()
 	leader := c.leaders.GetLeader(round)
 	if block.GetRound() != round || p.GetSender() != leader || block.GetAuthor() != leader {
