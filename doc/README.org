@@ -18,14 +18,15 @@
   out, so a crashed replica costs three rounds in every rotation: its own two, and
   the one before, whose votes go to it. The reputation code is on the branch
   =archive/reputation-leader=.
-- Keys are seeded. Without =-keys=, every replica derives the same insecure key
-  set (=diemcrypto/ecdsa.go:SeededKeys=), and replicas talk without TLS, so the
-  sender of a message is only claimed.
-- TLS certificates are static. With =-keys=, Gorums authenticates each peer by
-  its certificate ([[https://github.com/relab/gorums/issues/325][relab/gorums#325]]), and a message whose =sender= is not that
-  peer is dropped (=diemnet/server.go:accept=). Each certificate is self-signed
-  over the replica's signing key (=diemcrypto/tls.go=) and fixed at =-gen-keys=,
-  with no rotation or revocation.
+- Keys are seeded. With =-insecure-seeded-keys=, every replica derives the same
+  insecure key set (=diemcrypto/ecdsa.go:SeededKeys=), and replicas talk without
+  TLS, so the sender of a message is only claimed.
+- TLS certificates are static. With =-keys= and with =-local=, Gorums
+  authenticates each peer by its certificate ([[https://github.com/relab/gorums/issues/325][relab/gorums#325]]), and a message
+  whose =sender= is not that peer is dropped (=diemnet/server.go:accept=). Each
+  certificate is self-signed over the replica's signing key
+  (=diemcrypto/tls.go=) and fixed when the keys are made, with no rotation or
+  revocation.
 - No equivocation evidence. Conflicting messages from one replica are not
   recorded or reported.
 
