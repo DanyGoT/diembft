@@ -145,7 +145,7 @@ Lemma numbers here are DiemBFT's.
   replicas disagree on the leader under reordering (DiemBFT v4 3.7 update_leaders);
   it is kept on the branch =archive/reputation-leader=.
 - =RoundTimer= has no cap. Liveness rests on the commit gap growing by one per
-  stalled round until the timer exceeds the post-GST round time; Lemma 8 argues
+  stalled round until the timer exceeds the post-GST round time; Lemma 9 argues
   with a fixed 5\Delta timer, not a growing one.
 - Lemma 7 / Lemma 8 rely on the vote-lead bound (=core.go:maxRoundLead=, a memory
   bound) and dropping of timeouts for past rounds not discarding messages an honest
