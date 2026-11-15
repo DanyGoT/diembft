@@ -1,6 +1,7 @@
 package diemcrypto
 
 import (
+	"crypto/x509"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,21 @@ func TestReadKeysRoundTrip(t *testing.T) {
 	}
 	if !priv.PublicKey.Equal(pubs[2]) {
 		t.Error("the private key read does not match the public key registered for the same ID")
+	}
+
+	certs, err := ReadCerts(dir, n)
+	if err != nil {
+		t.Fatalf("ReadCerts: %v", err)
+	}
+	cert, err := x509.ParseCertificate(certs[2])
+	if err != nil {
+		t.Fatalf("parse certificate 2: %v", err)
+	}
+	if len(cert.URIs) != 1 || cert.URIs[0].String() != TLSIdentity(2) {
+		t.Errorf("certificate 2 URIs = %v, want [%s]", cert.URIs, TLSIdentity(2))
+	}
+	if !priv.PublicKey.Equal(cert.PublicKey) {
+		t.Error("certificate 2 is not over replica 2's key")
 	}
 }
 
