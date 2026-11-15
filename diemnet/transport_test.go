@@ -88,6 +88,14 @@ type peer struct {
 func newGroup(t *testing.T, n int, start func(*peer)) []*peer {
 	t.Helper()
 	peers := group(t, n, nil, start)
+	waitForPeers(t, peers)
+	return peers
+}
+
+// waitForPeers waits until every replica has every peer. A one-way message
+// sent before then can be lost.
+func waitForPeers(t *testing.T, peers []*peer) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for i, p := range peers {
@@ -95,7 +103,6 @@ func newGroup(t *testing.T, n int, start func(*peer)) []*peer {
 			t.Fatalf("replica %d WaitForPeers: %v", i+1, err)
 		}
 	}
-	return peers
 }
 
 // group builds n Gorums-local replicas wired into one peer group, over the TLS
@@ -270,6 +277,7 @@ func TestMulticastReachesAll(t *testing.T) {
 func TestMutualTLS(t *testing.T) {
 	const n = 4
 	peers := group(t, n, tlsConfigs(t, n, func(id uint32) uint32 { return id }), record)
+	waitForPeers(t, peers)
 	proposal, _, _ := round1(t, 1, n)
 
 	peers[0].tr.Proposal(proposal)
