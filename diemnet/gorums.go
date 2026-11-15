@@ -7,13 +7,18 @@ package diemnet
 
 import (
 	"context"
+	"crypto/tls"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/DanyGoT/diembft/diem"
+	"github.com/DanyGoT/diembft/diemcrypto"
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"github.com/relab/gorums"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // fetchTimeout bounds one block request. A peer that holds the block answers
@@ -32,14 +37,20 @@ type Network struct {
 	Peers  map[uint32]string // every replica's address, this one included
 	Listen string            // ":0" picks a free port; read it back with Addr
 
+	// TLS, if set, runs every stream over mutual TLS, and Gorums then
+	// authenticates each peer by its certificate, so ServerContext.SenderID
+	// names the replica that sent a message. Without it, streams are
+	// unencrypted and the sender ID is only claimed.
+	TLS *tls.Config
+
 	DialOptions   []gorums.DialOption
 	ServerOptions []gorums.ServerOption
 
-	// Server, if set, is used instead of creating one, and Listen, Peers,
-	// DialOptions and ServerOptions are then ignored. That is how
-	// gorums.NewLocalServers is used: WithPeers needs every peer address before
-	// any server exists, so the listeners have to be allocated first. The
-	// caller installs VerifyInterceptor on it, counting into Rejected.
+	// Server, if set, is used instead of creating one, and Listen, Peers, TLS,
+	// DialOptions and ServerOptions are then ignored. That is how LocalServers
+	// is used: WithPeers needs every peer address before any server exists, so
+	// the listeners have to be allocated first. The caller installs
+	// VerifyInterceptor on it, counting into Rejected.
 	Server   *gorums.Server
 	Rejected *atomic.Uint64
 }
@@ -52,6 +63,68 @@ type Network struct {
 type peerAddr string
 
 func (a peerAddr) Addr() string { return string(a) }
+
+// peerNode is a peer that Gorums authenticates by the identity in its
+// certificate.
+type peerNode struct {
+	addr string
+	id   uint32
+}
+
+func (n peerNode) Addr() string        { return n.addr }
+func (n peerNode) TLSIdentity() string { return diemcrypto.TLSIdentity(n.id) }
+
+// nodes is peers as a Gorums node source, authenticated if secure.
+func nodes(peers map[uint32]string, secure bool) gorums.NodeSource {
+	if !secure {
+		m := make(map[uint32]peerAddr, len(peers))
+		for id, addr := range peers {
+			m[id] = peerAddr(addr)
+		}
+		return gorums.WithNodes(m)
+	}
+	m := make(map[uint32]peerNode, len(peers))
+	for id, addr := range peers {
+		m[id] = peerNode{addr, id}
+	}
+	return gorums.WithNodes(m)
+}
+
+// security is the dial and server options for c: mutual TLS, or no transport
+// security if c is nil. They come first, so that a later dial option that
+// sets credentials would override them.
+func security(c *tls.Config) (gorums.DialOption, gorums.ServerOption) {
+	if c == nil {
+		return gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials())), nil
+	}
+	creds := credentials.NewTLS(c)
+	return gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(creds)),
+		gorums.WithGRPCServerOptions(grpc.Creds(creds))
+}
+
+// LocalServers is gorums.NewLocalServers for a group of n replicas on
+// loopback, with VerifyInterceptor over v counting into rejected. tlsByID, if
+// set, holds each replica's TLS configuration, as Network.TLS does. dial is
+// added to every replica's dial options.
+func LocalServers(n int, v *diem.Verifier, rejected *atomic.Uint64, tlsByID map[uint32]*tls.Config, dial ...gorums.DialOption) ([]*gorums.Server, func(), error) {
+	opts := []gorums.LocalServerOption{
+		gorums.WithLocalServerOptions(gorums.WithServerInterceptors(VerifyInterceptor(v, rejected))),
+		gorums.WithLocalDialOptionsFunc(func(id gorums.ID) []gorums.DialOption {
+			d, _ := security(tlsByID[id])
+			return append([]gorums.DialOption{d}, dial...)
+		}),
+	}
+	if tlsByID != nil {
+		opts = append(opts,
+			gorums.WithLocalNodes(func(id gorums.ID, addr string) gorums.NodeAddress { return peerNode{addr, id} }),
+			gorums.WithLocalServerOptionsFunc(func(id gorums.ID) []gorums.ServerOption {
+				_, s := security(tlsByID[id])
+				return []gorums.ServerOption{s}
+			}),
+		)
+	}
+	return gorums.NewLocalServers(n, opts...)
+}
 
 // Transport is the Gorums implementation of diem.Transport, together with the
 // server that receives on the other side.
@@ -94,14 +167,12 @@ func New(cfg Config) *Transport {
 	}
 	srv := cfg.Server
 	if srv == nil {
-		peers := make(map[uint32]peerAddr, len(cfg.Peers))
-		for id, addr := range cfg.Peers {
-			peers[id] = peerAddr(addr)
-		}
+		dial, serve := security(cfg.TLS)
 		srv = gorums.NewServer(append([]gorums.ServerOption{
 			gorums.WithAddr(cfg.Listen),
-			gorums.WithPeers(cfg.ID, gorums.WithNodes(peers), cfg.DialOptions...),
+			gorums.WithPeers(cfg.ID, nodes(cfg.Peers, cfg.TLS != nil), append([]gorums.DialOption{dial}, cfg.DialOptions...)...),
 			gorums.WithServerInterceptors(VerifyInterceptor(cfg.Verifier, cfg.Rejected)),
+			serve,
 		}, cfg.ServerOptions...)...)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,16 +14,12 @@ import (
 	"github.com/DanyGoT/diembft/diemcrypto"
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"github.com/relab/gorums"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
 const recvTimeout = 5 * time.Second
-
-// insecureDial is the loopback dial option every test cluster uses; there is
-// no TLS story here, only the transport.
-var insecureDial = gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 // testKeys caches one key set per group size, so every signer a test builds for
 // a group of n verifies the others' signatures.
@@ -86,14 +83,30 @@ type peer struct {
 	q  chan any
 }
 
-// newGroup builds n Gorums-local replicas wired into one peer group and starts
-// each with start, registering cleanup to stop everything in the right order.
+// newGroup builds n Gorums-local replicas wired into one peer group, starts
+// each with start, and waits until every replica has every peer.
+func newGroup(t *testing.T, n int, start func(*peer)) []*peer {
+	t.Helper()
+	peers := group(t, n, nil, start)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for i, p := range peers {
+		if err := p.tr.WaitForPeers(ctx); err != nil {
+			t.Fatalf("replica %d WaitForPeers: %v", i+1, err)
+		}
+	}
+	return peers
+}
+
+// group builds n Gorums-local replicas wired into one peer group, over the TLS
+// configurations in tlsByID if set, and starts each with start, registering
+// cleanup to stop everything in the right order.
 // GORUMS: peer addresses must all be known before any server is constructed,
 // so this binds n real loopback listeners via NewLocalServers rather than
 // letting each transport pick its own port.
-func newGroup(t *testing.T, n int, start func(*peer)) []*peer {
+func group(t *testing.T, n int, tlsByID map[uint32]*tls.Config, start func(*peer)) []*peer {
 	t.Helper()
-	srvs, rejected, stop := localServers(t, n, signer(t, 1, n))
+	srvs, rejected, stop := localServers(t, n, signer(t, 1, n), tlsByID)
 	t.Cleanup(stop)
 
 	peers := make([]*peer, n)
@@ -117,29 +130,39 @@ func newGroup(t *testing.T, n int, start func(*peer)) []*peer {
 			p.tr.Stop()
 		}
 	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for i, p := range peers {
-		if err := p.tr.WaitForPeers(ctx); err != nil {
-			t.Fatalf("replica %d WaitForPeers: %v", i+1, err)
-		}
-	}
 	return peers
 }
 
 // localServers is n Gorums local servers sharing one VerifyInterceptor over
 // c's keys, with the counter it rejects into.
-func localServers(t *testing.T, n int, c diem.Crypto) ([]*gorums.Server, *atomic.Uint64, func()) {
+func localServers(t *testing.T, n int, c diem.Crypto, tlsByID map[uint32]*tls.Config) ([]*gorums.Server, *atomic.Uint64, func()) {
 	t.Helper()
 	rejected := new(atomic.Uint64)
-	verify := VerifyInterceptor(diem.NewVerifier(c, diem.QuorumSize(n)), rejected)
-	srvs, stop, err := gorums.NewLocalServers(n, gorums.WithLocalDialOptions(insecureDial),
-		gorums.WithLocalServerOptions(gorums.WithServerInterceptors(verify)))
+	srvs, stop, err := LocalServers(n, diem.NewVerifier(c, diem.QuorumSize(n)), rejected, tlsByID)
 	if err != nil {
-		t.Fatalf("NewLocalServers: %v", err)
+		t.Fatalf("LocalServers: %v", err)
 	}
 	return srvs, rejected, stop
+}
+
+// tlsConfigs is each replica's TLS configuration in a group of n, where
+// replica id presents the certificate of replica certOf(id).
+func tlsConfigs(t *testing.T, n int, certOf func(id uint32) uint32) map[uint32]*tls.Config {
+	t.Helper()
+	signer(t, 1, n) // caches the group's keys
+	privs := testKeys[n].privs
+	certs, err := diemcrypto.Certificates(privs)
+	if err != nil {
+		t.Fatalf("Certificates: %v", err)
+	}
+	cfgs := make(map[uint32]*tls.Config, n)
+	for id := range privs {
+		c := certOf(id)
+		if cfgs[id], err = diemcrypto.TLSConfig(c, privs[c], certs); err != nil {
+			t.Fatalf("TLSConfig: %v", err)
+		}
+	}
+	return cfgs
 }
 
 // sig signs digest as signer and wraps the result as a proto Signature.
@@ -239,6 +262,43 @@ func TestMulticastReachesAll(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestMutualTLS runs a group over mutual TLS, where Gorums authenticates each
+// peer by its certificate: a proposal reaches every replica, the sender
+// included.
+func TestMutualTLS(t *testing.T) {
+	const n = 4
+	peers := group(t, n, tlsConfigs(t, n, func(id uint32) uint32 { return id }), record)
+	proposal, _, _ := round1(t, 1, n)
+
+	peers[0].tr.Proposal(proposal)
+	for i, p := range peers {
+		if m, _ := recv(t, p.q).(proto.Message); !proto.Equal(m, proposal) {
+			t.Errorf("replica %d: did not receive the proposal", i+1)
+		}
+	}
+}
+
+// TestWrongCertificateIsRefused: replica 2 presents replica 3's certificate,
+// which the group trusts but which names another replica, so replica 1 must
+// refuse to talk to it as replica 2.
+func TestWrongCertificateIsRefused(t *testing.T) {
+	const n = 4
+	cfgs := tlsConfigs(t, n, func(id uint32) uint32 {
+		if id == 2 {
+			return 3
+		}
+		return id
+	})
+	peers := group(t, n, cfgs, record)
+	proposal, _, _ := round1(t, 1, n)
+
+	peers[0].tr.Proposal(proposal)
+	node := peers[0].tr.srv.PeerConfig().Node(2)
+	if !waitFor(recvTimeout, func() bool { return status.Code(node.LastErr()) == codes.Unauthenticated }) {
+		t.Errorf("replica 1's last error from replica 2 = %v, want Unauthenticated", node.LastErr())
+	}
 }
 
 // TestVoteIsUnicast: DiemBFT 3.1 sends a vote to the next round's leader alone,
@@ -617,7 +677,7 @@ func newCluster(t *testing.T, n int) []*node {
 	if err != nil {
 		t.Fatalf("GenerateKeys: %v", err)
 	}
-	srvs, rejected, stopSrvs := localServers(t, n, diemcrypto.New(nil, pubs))
+	srvs, rejected, stopSrvs := localServers(t, n, diemcrypto.New(nil, pubs), nil)
 	t.Cleanup(stopSrvs)
 	validators := make([]uint32, n)
 	for i := range n {
