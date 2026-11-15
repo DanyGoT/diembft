@@ -36,10 +36,11 @@ type sim struct {
 	invalid int
 }
 
-const (
-	simRoundBase = 100 * time.Millisecond
-	simRoundMax  = 10 * time.Second
-)
+var simTimer = RoundTimer{Alpha: 100 * time.Millisecond, Beta: 50 * time.Millisecond}
+
+// simHorizon is how far idle looks ahead for a timer. The round timer has no
+// cap, but no test reaches the commit gap of 198 it would take to pass this.
+const simHorizon = 10 * time.Second
 
 func newSim(t *testing.T, n int, down ...uint32) *sim {
 	t.Helper()
@@ -73,7 +74,7 @@ func newSim(t *testing.T, n int, down ...uint32) *sim {
 			Crypto:     newTestSigner(n),
 			Transport:  &simNet{s: s, id: id},
 			Clock:      s.clock,
-			Backoff:    NewBackoff(simRoundBase, simRoundMax, 2),
+			RoundTimer: simTimer,
 			Lock:       new(sync.Mutex),
 		})
 	}
@@ -170,11 +171,10 @@ func (s *sim) run(steps int) {
 }
 
 // idle fires timers one deadline at a time until one queues a message, and
-// reports whether one did. Every timer is armed for at most simRoundMax, so
-// each one pending fires within that bound. Stopping there ends a timer that
-// keeps re-arming without sending.
+// reports whether one did. Stopping at simHorizon ends a timer that keeps
+// re-arming without sending.
 func (s *sim) idle() bool {
-	until := s.clock.Now().Add(simRoundMax)
+	until := s.clock.Now().Add(simHorizon)
 	for len(s.queue) == 0 {
 		next := s.clock.earliest(until)
 		if next == nil {
@@ -387,7 +387,7 @@ func TestDuplicateTimeoutDoesNotRetrigger(t *testing.T) {
 	safety := NewSafety(1, NewVerifier(signer, quorum), signer, ledger, tree)
 	net := &dupNet{}
 	pm := NewPacemaker(quorum, faulty, newFakeClock(),
-		NewBackoff(simRoundBase, simRoundMax, 2), new(sync.Mutex), net, safety, tree)
+		simTimer, new(sync.Mutex), net, safety, tree)
 	pm.AdvanceRoundQC(genesisQC) // round 1
 
 	timeout := func(from uint32) *diempb.TimeoutMsg {
