@@ -356,7 +356,7 @@ delta is unknown".
   =startTimer=. commit_gap(r) is r minus the round of the ledger's last commit
   (=blocktree.go:CommitRound=). The replica sets beta to alpha/2.
 - Faithful :: no deviation. There is no =Pacemaker= method of this name; the
-  formula is a field.
+  formula is a type the pacemaker holds as a field.
 
 ** start_timer(new_round)
 
@@ -480,7 +480,7 @@ Not implemented; see *Procedures with no counterpart*.
   genesis; the paper's version could restart from its last vote.
 
 Two more are implemented but not as procedures, noted so nobody hunts for them:
-=get_round_timer= is a field rather than a method (=pacemaker.go:RoundTimer=),
+=get_round_timer= is a type held as a field rather than a method (=pacemaker.go:RoundTimer=),
 and =stop_timer= drops its round argument (=pacemaker.go:Stop=).
 
 * Code with no counterpart in the paper
