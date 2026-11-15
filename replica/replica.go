@@ -17,10 +17,7 @@ import (
 	"github.com/relab/gorums/benchkit"
 )
 
-const (
-	defaultRoundTimeout = 500 * time.Millisecond
-	backoffFactor       = 2
-)
+const defaultRoundTimeout = 500 * time.Millisecond
 
 // Config is everything a replica needs.
 type Config struct {
@@ -33,8 +30,8 @@ type Config struct {
 	// MemPool supplies a leader's payload; nil proposes empty blocks.
 	MemPool diem.MemPool
 
-	RoundTimeout    time.Duration
-	MaxRoundTimeout time.Duration
+	// RoundTimeout is the round timer's α; its β is half of it.
+	RoundTimeout time.Duration
 
 	// Measure configures the measurement taken from core start. Its Duration
 	// bounds the run; 0 runs until ctx is done.
@@ -71,9 +68,6 @@ func New(cfg Config) *Replica {
 	if cfg.RoundTimeout == 0 {
 		cfg.RoundTimeout = defaultRoundTimeout
 	}
-	if cfg.MaxRoundTimeout == 0 {
-		cfg.MaxRoundTimeout = 64 * cfg.RoundTimeout
-	}
 	// The key set fixes the quorum and the leader rotation, so a peer list that
 	// disagrees with it would give this replica a different quorum from its
 	// peers. That is a deployment error to fail on, not to reconcile.
@@ -102,7 +96,7 @@ func New(cfg Config) *Replica {
 		Crypto:     signer,
 		Transport:  stamper{r.net, r.proposed},
 		Clock:      diem.SystemClock{},
-		Backoff:    diem.NewBackoff(cfg.RoundTimeout, cfg.MaxRoundTimeout, backoffFactor),
+		RoundTimer: diem.RoundTimer{Alpha: cfg.RoundTimeout, Beta: cfg.RoundTimeout / 2},
 		Lock:       &r.mu,
 		MemPool:    cfg.MemPool,
 	})

@@ -33,7 +33,7 @@ func newCoreFixture(t *testing.T) *coreFixture {
 		Crypto:     newTestSigner(testN),
 		Transport:  f.net,
 		Clock:      newFakeClock(),
-		Backoff:    NewBackoff(100*time.Millisecond, time.Second, 2),
+		RoundTimer: RoundTimer{Alpha: 100 * time.Millisecond, Beta: 50 * time.Millisecond},
 		Lock:       new(sync.Mutex),
 	})
 	f.core.Start()
@@ -269,7 +269,7 @@ func TestCoreStopDisarmsTimer(t *testing.T) {
 		Crypto:     newTestSigner(testN),
 		Transport:  net,
 		Clock:      clock,
-		Backoff:    NewBackoff(100*time.Millisecond, time.Second, 2),
+		RoundTimer: RoundTimer{Alpha: 100 * time.Millisecond, Beta: 50 * time.Millisecond},
 		Lock:       new(sync.Mutex),
 	})
 	core.Start()

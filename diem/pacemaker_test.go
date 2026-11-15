@@ -39,7 +39,7 @@ func newTestPacemaker(t *testing.T, n int) (*Pacemaker, *fakeClock, *recordNet) 
 	crypto := newTestSigner(n)
 	tree := NewBlockTree(1, quorum, ledger, crypto)
 	safety := NewSafety(1, NewVerifier(crypto, quorum), crypto, ledger, tree)
-	dur := NewBackoff(10*time.Millisecond, time.Second, 2)
+	dur := RoundTimer{Alpha: testAlpha, Beta: testBeta}
 	pm := NewPacemaker(quorum, faulty, clock, dur, new(sync.Mutex), net, safety, tree)
 	return pm, clock, net
 }
@@ -146,7 +146,7 @@ func TestStartTimerFiresLocalTimeoutRound(t *testing.T) {
 	pm, clock, net := newTestPacemaker(t, 4)
 	pm.AdvanceRoundQC(genesisQC)
 
-	clock.Advance(pm.dur.Duration())
+	clock.Advance(pm.dur.Duration(pm.CurrentRound(), 0))
 
 	if len(net.timeouts) != 1 {
 		t.Fatalf("the armed timer broadcast %d timeouts, want 1", len(net.timeouts))
@@ -301,25 +301,50 @@ func TestLocalTimeoutRoundDropsRedundantTC(t *testing.T) {
 	}
 }
 
-// TestBackoffGrowsOncePerFailedRound: retransmitting a round's timeout must not
-// grow the timer; the round ending on a TC grows it once.
-func TestBackoffGrowsOncePerFailedRound(t *testing.T) {
-	pm, _, _ := newTestPacemaker(t, 4) // backoff factor 2
-	base := pm.dur.Duration()
-	if !pm.AdvanceRoundQC(bareQC(nil, 0)) {
-		t.Fatal("setup: AdvanceRoundQC(round 0) should have entered round 1")
+const (
+	testAlpha = 10 * time.Millisecond
+	testBeta  = 5 * time.Millisecond
+)
+
+// TestRoundTimerFollowsCommitGap: DiemBFT 3.5 get_round_timer arms
+// α + β·commit_gap(r). Failed rounds and QCs that commit nothing widen the gap,
+// retransmits leave it, and only a commit narrows it.
+func TestRoundTimerFollowsCommitGap(t *testing.T) {
+	pm, clock, _ := newTestPacemaker(t, 4)
+	expect := func(step string, gap time.Duration) {
+		t.Helper()
+		if len(clock.pending) != 1 {
+			t.Fatalf("%s: %d timers armed, want 1", step, len(clock.pending))
+		}
+		got, want := clock.pending[0].deadline.Sub(clock.now), testAlpha+gap*testBeta
+		if got != want {
+			t.Fatalf("%s: timer %v, want %v", step, got, want)
+		}
 	}
 
-	for range 3 {
-		pm.LocalTimeoutRound()
-	}
-	if !pm.AdvanceRoundTC(makeTC(1)) {
-		t.Fatal("setup: AdvanceRoundTC(round 1) should have entered round 2")
-	}
+	pm.AdvanceRoundQC(bareQC(nil, 0))
+	expect("round 1", 1)
+	pm.AdvanceRoundTC(makeTC(1))
+	expect("round 2 on a TC", 2)
+	pm.AdvanceRoundTC(makeTC(2))
+	expect("round 3 on a TC", 3)
+	pm.LocalTimeoutRound()
+	expect("round 3 retransmit", 3)
 
-	if got, want := pm.dur.Duration(), 2*base; got != want {
-		t.Fatalf("Duration() = %v after one failed round, want %v", got, want)
+	// b1 <- b2 <- b3: a QC over b3 commits b2.
+	b1 := NewBlock(1, 1, nil, GenesisQC())
+	b2 := NewBlock(1, 2, nil, qcWith(voteInfo(b1.GetId(), 1, genesisBlock.GetId(), 0), nil))
+	b3 := NewBlock(1, 3, nil, qcWith(voteInfo(b2.GetId(), 2, b1.GetId(), 1), nil))
+	for _, b := range []*diempb.Block{b1, b2, b3} {
+		pm.tree.ExecuteAndInsert(b)
 	}
+	qc3 := qcWith(voteInfo(b3.GetId(), 3, b2.GetId(), 2), hashOf(0x99))
+	pm.tree.ProcessQC(qc3)
+	pm.AdvanceRoundQC(qc3)
+	expect("round 4 after committing round 2", 2)
+
+	pm.AdvanceRoundQC(bareQC(nil, 4))
+	expect("round 5 on a QC that commits nothing", 3)
 }
 
 // TestLocalTimeoutRoundRearmsWhenRefused: a round whose timeout Safety refuses
@@ -332,37 +357,11 @@ func TestLocalTimeoutRoundRearmsWhenRefused(t *testing.T) {
 		t.Fatal("setup: AdvanceRoundQC(round 4) should have entered round 5")
 	}
 
-	clock.Advance(pm.dur.Duration())
+	clock.Advance(pm.dur.Duration(pm.CurrentRound(), 0))
 	if len(net.timeouts) != 0 {
 		t.Fatalf("setup: broadcast %d timeouts, want MakeTimeout to refuse", len(net.timeouts))
 	}
 	if len(clock.pending) != 1 {
 		t.Fatalf("%d timers armed after a refused timeout, want 1", len(clock.pending))
-	}
-}
-
-func TestBackoffGrowsThenResets(t *testing.T) {
-	base, max, factor := 10*time.Millisecond, 80*time.Millisecond, 2.0
-	d := NewBackoff(base, max, factor)
-
-	if got := d.Duration(); got != base {
-		t.Fatalf("Duration() = %v, want base %v", got, base)
-	}
-
-	want := base
-	for i := range 5 {
-		d.Grow()
-		want = min(time.Duration(float64(want)*factor), max)
-		if got := d.Duration(); got != want {
-			t.Fatalf("after %d timeouts, Duration() = %v, want %v", i+1, got, want)
-		}
-	}
-	if got := d.Duration(); got != max {
-		t.Errorf("Duration() = %v, want saturated at max %v", got, max)
-	}
-
-	d.Reset()
-	if got := d.Duration(); got != base {
-		t.Errorf("Duration() after Reset() = %v, want base %v", got, base)
 	}
 }

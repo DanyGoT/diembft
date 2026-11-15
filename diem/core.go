@@ -36,7 +36,7 @@ type Config struct {
 	Crypto     Crypto
 	Transport  Transport
 	Clock      Clock
-	Backoff    *Backoff
+	RoundTimer RoundTimer
 
 	// Lock is the lock the caller serializes Core calls with. The round
 	// timer's callback runs on its own goroutine and takes it. The transport,
@@ -70,7 +70,7 @@ func New(cfg Config) *Core {
 
 	tree := NewBlockTree(cfg.ID, quorum, cfg.Ledger, cfg.Crypto)
 	safety := NewSafety(cfg.ID, NewVerifier(cfg.Crypto, quorum), cfg.Crypto, cfg.Ledger, tree)
-	pacemaker := NewPacemaker(quorum, faulty, cfg.Clock, cfg.Backoff, cfg.Lock, cfg.Transport, safety, tree)
+	pacemaker := NewPacemaker(quorum, faulty, cfg.Clock, cfg.RoundTimer, cfg.Lock, cfg.Transport, safety, tree)
 	leaders := NewLeaderElection(cfg.Validators)
 
 	return &Core{

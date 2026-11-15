@@ -18,7 +18,7 @@ type Pacemaker struct {
 	faulty int
 
 	clock  Clock
-	dur    *Backoff
+	dur    RoundTimer
 	lock   sync.Locker
 	net    Transport
 	safety *Safety
@@ -40,7 +40,7 @@ type timeoutBucket struct {
 
 // NewPacemaker returns a pacemaker at round 0 with no timer armed. Start on
 // Core does the first advance.
-func NewPacemaker(quorum, faulty int, clock Clock, dur *Backoff, lock sync.Locker, net Transport, safety *Safety, tree *BlockTree) *Pacemaker {
+func NewPacemaker(quorum, faulty int, clock Clock, dur RoundTimer, lock sync.Locker, net Transport, safety *Safety, tree *BlockTree) *Pacemaker {
 	return &Pacemaker{
 		quorum:          quorum,
 		faulty:          faulty,
@@ -66,9 +66,7 @@ func (p *Pacemaker) Stop() {
 	}
 }
 
-// startTimer enters newRound and arms its timer. The paper leaves the duration
-// formula open — "4*delta, or alpha + beta*commit_gap(r) if delta is unknown" —
-// and this takes an exponential Backoff.
+// startTimer enters newRound and arms its timer for get_round_timer(newRound).
 func (p *Pacemaker) startTimer(newRound uint64) {
 	p.Stop()
 	p.currentRound = newRound
@@ -79,7 +77,7 @@ func (p *Pacemaker) startTimer(newRound uint64) {
 	}
 	// The callback runs on its own goroutine, so it takes the caller's lock.
 	epoch := p.epoch
-	p.timer = p.clock.AfterFunc(p.dur.Duration(), func() {
+	p.timer = p.clock.AfterFunc(p.dur.Duration(newRound, p.tree.CommitRound()), func() {
 		p.lock.Lock()
 		defer p.lock.Unlock()
 		p.fire(epoch)
@@ -181,7 +179,6 @@ func (p *Pacemaker) AdvanceRoundTC(tc *diempb.TimeoutCert) bool {
 	if tc == nil || tc.GetRound() < p.currentRound {
 		return false
 	}
-	p.dur.Grow()
 	p.lastRoundTC = tc
 	p.startTimer(tc.GetRound() + 1)
 	return true
@@ -194,31 +191,22 @@ func (p *Pacemaker) AdvanceRoundQC(qc *diempb.QuorumCert) bool {
 	if qc.Round() < p.currentRound {
 		return false
 	}
-	p.dur.Reset()
 	p.lastRoundTC = nil
 	p.startTimer(qc.Round() + 1)
 	return true
 }
 
-// Backoff is the round timer's duration: it grows by a factor on every
-// consecutive round that ends on a TC, capped at max, and resets when a round
-// succeeds.
-// DiemBFT 3.5 get_round_timer gives 4Δ or α+β·commit_gap instead; growth stands
-// in for a configured Δ, so liveness (Lemma 8) needs max above a round's time
-// after GST.
-type Backoff struct {
-	base, max time.Duration
-	factor    float64
-	current   time.Duration
+// RoundTimer is DiemBFT 3.5 get_round_timer for an unknown Δ:
+// Alpha + Beta·commit_gap(r), where commit_gap is the rounds since the last
+// commit. It has no cap: while commits stall the gap grows by one per round, so
+// the timer outgrows any round time after GST.
+type RoundTimer struct {
+	Alpha, Beta time.Duration
 }
 
-// NewBackoff returns a round timer policy starting at base.
-func NewBackoff(base, max time.Duration, factor float64) *Backoff {
-	return &Backoff{base: base, max: max, factor: factor, current: base}
+// Duration is the timer for round when the last committed block is from round
+// committed.
+func (t RoundTimer) Duration(round, committed uint64) time.Duration {
+	gap := round - min(committed, round)
+	return t.Alpha + time.Duration(gap)*t.Beta
 }
-
-func (b *Backoff) Duration() time.Duration { return b.current }
-
-func (b *Backoff) Reset() { b.current = b.base }
-
-func (b *Backoff) Grow() { b.current = min(time.Duration(float64(b.current)*b.factor), b.max) }

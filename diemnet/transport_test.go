@@ -553,7 +553,7 @@ func newCore(t *testing.T, id uint32) (*diem.Core, *sync.Mutex) {
 		Crypto:     signer(t, id, 4),
 		Transport:  nopNet{},
 		Clock:      diem.SystemClock{},
-		Backoff:    diem.NewBackoff(time.Hour, time.Hour, 2),
+		RoundTimer: diem.RoundTimer{Alpha: time.Hour},
 		Lock:       mu,
 	})
 	mu.Lock()
@@ -654,10 +654,7 @@ func TestStopIdempotent(t *testing.T) {
 
 // --- the end-to-end run ---
 
-const (
-	testRoundBase = 20 * time.Millisecond
-	testRoundMax  = 2 * time.Second
-)
+const testAlpha = 20 * time.Millisecond
 
 // node is one replica's full stack over the Gorums transport, plus the commit
 // log the test reads. mu serializes every core call, as replica.Replica does,
@@ -710,7 +707,7 @@ func newCluster(t *testing.T, n int) []*node {
 			Crypto:     signer,
 			Transport:  nd.tr,
 			Clock:      diem.SystemClock{},
-			Backoff:    diem.NewBackoff(testRoundBase, testRoundMax, 2),
+			RoundTimer: diem.RoundTimer{Alpha: testAlpha, Beta: testAlpha / 2},
 			Lock:       &nd.mu,
 		})
 		nodes[i] = nd

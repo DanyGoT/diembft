@@ -67,6 +67,10 @@ func (t *BlockTree) HighQC() *diempb.QuorumCert { return t.highQC }
 // on every outgoing message so a lagging replica catches up on commits.
 func (t *BlockTree) HighCommitQC() *diempb.QuorumCert { return t.highCommitQC }
 
+// CommitRound is the round of the last block the ledger committed. It can lag
+// HighCommitQC while the blocks it commits are still being fetched.
+func (t *BlockTree) CommitRound() uint64 { return t.ledger.commitRound() }
+
 // Block returns a pending block by id. The paper's pending_block_tree (3.3) is
 // read only by prune; here it is also what Core.Block answers a peer's
 // block request from.
