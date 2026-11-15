@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,8 +39,6 @@ import (
 	"github.com/DanyGoT/diembft/replica"
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchkit"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // options holds the parsed command line.
@@ -59,9 +58,9 @@ type options struct {
 func newOptions(fs *flag.FlagSet) *options {
 	o := &options{std: benchkit.RegisterFlags(fs)}
 	fs.IntVar(&o.local, "local", 0, "run this many replicas in one process")
-	fs.StringVar(&o.keys, "keys", "", "directory holding <id>.key and <id>.pub; required unless -insecure-seeded-keys")
-	fs.BoolVar(&o.insecureSeeded, "insecure-seeded-keys", false, "without -keys, derive every replica's keys from a public seed; anyone can sign for any replica")
-	fs.BoolVar(&o.genKeys, "gen-keys", false, "write a key pair per replica into -keys and exit")
+	fs.StringVar(&o.keys, "keys", "", "directory holding <id>.key, <id>.pub and <id>.crt; replicas then talk over mutual TLS; required unless -insecure-seeded-keys")
+	fs.BoolVar(&o.insecureSeeded, "insecure-seeded-keys", false, "without -keys, derive every replica's keys from a public seed and talk without TLS; anyone can sign for any replica")
+	fs.BoolVar(&o.genKeys, "gen-keys", false, "write a key pair and TLS certificate per replica into -keys and exit")
 	fs.DurationVar(&o.viewDuration, "view-duration", 0, "base round timeout; 0 picks a default")
 	fs.UintVar(&o.sendBuffer, "send-buffer", 0, "Gorums send queue capacity per peer; 0 picks Gorums' default")
 	fs.IntVar(&o.faultReplica, "fault-replica", 1, "the replica -fault-kill-after stops, counted from its first round as -time is; every node gets the same sweep -extra-args, so only this one exits")
@@ -137,11 +136,11 @@ func (o *options) writeKeys() error {
 	return nil
 }
 
-// runLocal runs a whole cluster in one process. gorums.NewLocalServers
-// pre-allocates the loopback listeners and numbers the servers 1..n, which is
-// what makes this possible at all: WithPeers needs every address before any
-// server exists. The replicas share one verifier, which needs only the public
-// keys, and so one reject counter.
+// runLocal runs a whole cluster in one process, over mutual TLS.
+// diemnet.LocalServers pre-allocates the loopback listeners and numbers the
+// servers 1..n, which is what makes this possible at all: WithPeers needs every
+// address before any server exists. The replicas share one verifier, which
+// needs only the public keys, and so one reject counter.
 func (o *options) runLocal(n int) error {
 	target, err := o.faultTarget(n)
 	if err != nil {
@@ -151,10 +150,19 @@ func (o *options) runLocal(n int) error {
 	if err != nil {
 		return err
 	}
+	certs, err := diemcrypto.Certificates(privs)
+	if err != nil {
+		return err
+	}
+	tlsByID := make(map[uint32]*tls.Config, n)
+	for id, key := range privs {
+		if tlsByID[id], err = diemcrypto.TLSConfig(id, key, certs); err != nil {
+			return err
+		}
+	}
 	rejected := new(atomic.Uint64)
-	verify := diemnet.VerifyInterceptor(diem.NewVerifier(diemcrypto.New(nil, pubs), diem.QuorumSize(n)), rejected)
-	srvs, stop, err := gorums.NewLocalServers(n, gorums.WithLocalDialOptions(o.dialOptions()...),
-		gorums.WithLocalServerOptions(gorums.WithServerInterceptors(verify)))
+	verifier := diem.NewVerifier(diemcrypto.New(nil, pubs), diem.QuorumSize(n))
+	srvs, stop, err := diemnet.LocalServers(n, verifier, rejected, tlsByID, o.dialOptions()...)
 	if err != nil {
 		return err
 	}
@@ -192,6 +200,19 @@ func (o *options) replicaKeys(id uint32, n int) (*ecdsa.PrivateKey, map[uint32]*
 	return privs[id], pubs, nil
 }
 
+// replicaTLS is id's mutual TLS configuration over the certificates of n
+// replicas in -keys, or nil, for no transport security, without -keys.
+func (o *options) replicaTLS(id uint32, key *ecdsa.PrivateKey, n int) (*tls.Config, error) {
+	if o.keys == "" {
+		return nil, nil
+	}
+	certs, err := diemcrypto.ReadCerts(o.keys, n)
+	if err != nil {
+		return nil, err
+	}
+	return diemcrypto.TLSConfig(id, key, certs)
+}
+
 // runOne runs this process's single replica. -remotes lists every replica in ID
 // order, so a replica's position in that list is its ID.
 func (o *options) runOne() error {
@@ -213,12 +234,16 @@ func (o *options) runOne() error {
 	if err != nil {
 		return err
 	}
+	tlsConfig, err := o.replicaTLS(id, priv, len(pubs))
+	if err != nil {
+		return err
+	}
 	peers := make(map[uint32]string, len(addrs))
 	for i, addr := range addrs {
 		peers[uint32(i+1)] = addr
 	}
 	return o.runAll(len(addrs), []*replica.Replica{replica.New(replica.Config{
-		ID: id, Peers: peers, Listen: self,
+		ID: id, Peers: peers, Listen: self, TLS: tlsConfig,
 		Key: priv, Keys: pubs,
 		MemPool:      o.mempool(),
 		RoundTimeout: o.viewDuration,
@@ -314,11 +339,6 @@ func (o *options) mempool() diem.MemPool {
 	return replica.NewPayload(o.std.Payload, o.std.Workers, o.std.Rate)
 }
 
-// GORUMS: NewLocalServers and any real dial need explicit transport
-// credentials; there is no insecure default.
 func (o *options) dialOptions() []gorums.DialOption {
-	return []gorums.DialOption{
-		gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials())),
-		gorums.WithSendBufferSize(o.sendBuffer),
-	}
+	return []gorums.DialOption{gorums.WithSendBufferSize(o.sendBuffer)}
 }
