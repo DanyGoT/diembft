@@ -23,8 +23,8 @@ const (
 )
 
 // signer is a *claim*: meaningful only once sig verifies against the public key
-// registered for that ID. Gorums exposes no authenticated sender identity, so
-// authentication is by signature, never by connection.
+// registered for that ID. A certificate carries other replicas' signatures, so
+// the peer it arrived from cannot vouch for them.
 type Signature struct {
 	state             protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Signer uint32                 `protobuf:"varint,1,opt,name=signer"`
