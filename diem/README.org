@@ -95,7 +95,7 @@ argument — it knows nothing of the message types, and checking a certificate i
 =verify.go:verifyCert= in =diem=, and =Clock= (=SystemClock= and =fakeClock=)
 arms the round timer.
 
-The ledger, the block tree and the backoff policy are concrete
+The ledger, the block tree and the round timer are concrete
 types, called directly. An interface with a single implementation is a hop to
 step through while reading and buys nothing.
 
