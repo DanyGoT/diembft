@@ -17,7 +17,7 @@ import (
 	"github.com/relab/gorums/benchkit"
 )
 
-const defaultRoundTimeout = 500 * time.Millisecond
+const defaultRoundTimeout = 100 * time.Millisecond
 
 // Config is everything a replica needs.
 type Config struct {
