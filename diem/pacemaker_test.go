@@ -311,12 +311,12 @@ const (
 // retransmits leave it, and only a commit narrows it.
 func TestRoundTimerFollowsCommitGap(t *testing.T) {
 	pm, clock, _ := newTestPacemaker(t, 4)
-	expect := func(step string, gap time.Duration) {
+	expect := func(step string, gap int) {
 		t.Helper()
 		if len(clock.pending) != 1 {
 			t.Fatalf("%s: %d timers armed, want 1", step, len(clock.pending))
 		}
-		got, want := clock.pending[0].deadline.Sub(clock.now), testAlpha+gap*testBeta
+		got, want := clock.pending[0].deadline.Sub(clock.now), testAlpha+time.Duration(gap)*testBeta
 		if got != want {
 			t.Fatalf("%s: timer %v, want %v", step, got, want)
 		}
@@ -328,6 +328,7 @@ func TestRoundTimerFollowsCommitGap(t *testing.T) {
 	expect("round 2 on a TC", 2)
 	pm.AdvanceRoundTC(makeTC(2))
 	expect("round 3 on a TC", 3)
+	clock.Advance(testAlpha) // short of the deadline, so only a re-armed timer passes
 	pm.LocalTimeoutRound()
 	expect("round 3 retransmit", 3)
 
@@ -345,6 +346,10 @@ func TestRoundTimerFollowsCommitGap(t *testing.T) {
 
 	pm.AdvanceRoundQC(bareQC(nil, 4))
 	expect("round 5 on a QC that commits nothing", 3)
+
+	if got := pm.dur.Duration(3, 5); got != testAlpha {
+		t.Errorf("Duration(round 3, committed 5) = %v, want α %v", got, testAlpha)
+	}
 }
 
 // TestLocalTimeoutRoundRearmsWhenRefused: a round whose timeout Safety refuses
