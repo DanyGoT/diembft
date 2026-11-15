@@ -352,11 +352,11 @@ The paper calls this from both public procedures but never defines it.
 The paper leaves the formula open — "4*delta, or alpha + beta*commit_gap(r) if
 delta is unknown".
 
-- Implemented :: delegated to an exponential backoff, =pacemaker.go:Backoff=,
-  read in =startTimer=, grown by =AdvanceRoundTC= once per round that ended on
-  a TC, and reset by =AdvanceRoundQC=.
-- Differs :: a choice within the paper's latitude rather than a deviation.
-  There is no =Pacemaker= method of this name; the policy is a field.
+- Implemented :: =pacemaker.go:RoundTimer=, alpha + beta*commit_gap(r), read in
+  =startTimer=. commit_gap(r) is r minus the round of the ledger's last commit
+  (=blocktree.go:CommitRound=). The replica sets beta to alpha/2.
+- Faithful :: no deviation. There is no =Pacemaker= method of this name; the
+  formula is a field.
 
 ** start_timer(new_round)
 
@@ -416,14 +416,12 @@ locally as well (Bracha amplification), at 2f+1 return the TC.
 ** advance_round_tc(tc)
 
 - Implemented :: =pacemaker.go:AdvanceRoundTC=.
-- Faithful :: no deviation. The =Grow= call in =AdvanceRoundTC= is
-  =get_round_timer='s business, not the round logic's.
+- Faithful :: no deviation.
 
 ** advance_round_qc(qc)
 
 - Implemented :: =pacemaker.go:AdvanceRoundQC=.
-- Faithful :: no deviation. The =Reset= call in =AdvanceRoundQC= is
-  =get_round_timer='s business, not the round logic's.
+- Faithful :: no deviation.
 
 * 3.6 MemPool
 
@@ -482,7 +480,7 @@ Not implemented; see *Procedures with no counterpart*.
   genesis; the paper's version could restart from its last vote.
 
 Two more are implemented but not as procedures, noted so nobody hunts for them:
-=get_round_timer= is a policy field rather than a method (=pacemaker.go:dur=),
+=get_round_timer= is a field rather than a method (=pacemaker.go:RoundTimer=),
 and =stop_timer= drops its round argument (=pacemaker.go:Stop=).
 
 * Code with no counterpart in the paper
