@@ -61,7 +61,7 @@ func newOptions(fs *flag.FlagSet) *options {
 	fs.StringVar(&o.keys, "keys", "", "directory holding <id>.key, <id>.pub and <id>.crt; replicas then talk over mutual TLS; required unless -insecure-seeded-keys")
 	fs.BoolVar(&o.insecureSeeded, "insecure-seeded-keys", false, "without -keys, derive every replica's keys from a public seed and talk without TLS; anyone can sign for any replica")
 	fs.BoolVar(&o.genKeys, "gen-keys", false, "write a key pair and TLS certificate per replica into -keys and exit")
-	fs.DurationVar(&o.viewDuration, "view-duration", 0, "base round timeout; 0 picks a default")
+	fs.DurationVar(&o.viewDuration, "view-duration", 0, "round timer α; it grows by α/2 per round since the last commit; 0 picks a default")
 	fs.UintVar(&o.sendBuffer, "send-buffer", 0, "Gorums send queue capacity per peer; 0 picks Gorums' default")
 	fs.IntVar(&o.faultReplica, "fault-replica", 1, "the replica -fault-kill-after stops, counted from its first round as -time is; every node gets the same sweep -extra-args, so only this one exits")
 	return o
