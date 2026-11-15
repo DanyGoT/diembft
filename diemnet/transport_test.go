@@ -334,14 +334,42 @@ func TestForgedNeverReachesTheHandler(t *testing.T) {
 	}
 }
 
-// TestVerifyInterceptor drives the interceptor directly, with no server
-// involved. A rejected message must be counted and must not reach the next
-// handler, and a valid one, or a request it does not verify, must pass. This
-// is the test that shows the transport boundary is the security boundary.
-func TestVerifyInterceptor(t *testing.T) {
+// TestRelayedNeverReachesTheHandler has replica 2 relay replica 1's signed
+// proposal, timeout and votes, then send a timeout of its own. Each relayed
+// message verifies, but its sender is not the peer that sent it, so the first
+// message every replica sees must be replica 2's own timeout.
+func TestRelayedNeverReachesTheHandler(t *testing.T) {
 	const n = 4
-	var rejected atomic.Uint64
-	verify := VerifyInterceptor(diem.NewVerifier(signer(t, 1, n), diem.QuorumSize(n)), &rejected)
+	peers := newGroup(t, n, record)
+	proposal, vote, timeout := round1(t, 1, n)
+	_, _, own := round1(t, 2, n)
+
+	relay := peers[1].tr
+	relay.Proposal(proposal)
+	relay.Timeout(timeout)
+	for _, p := range peers {
+		relay.Vote(vote, p.id)
+	}
+	relay.Timeout(own)
+
+	for i, p := range peers {
+		if m, _ := recv(t, p.q).(proto.Message); !proto.Equal(m, own) {
+			t.Errorf("replica %d: first message is not replica 2's own timeout", i+1)
+		}
+	}
+	if got := peers[0].tr.Counters().Rejected; got != 3*n {
+		t.Errorf("Rejected = %d, want %d", got, 3*n)
+	}
+}
+
+// TestAccept drives the interceptor's check directly, with no server
+// involved. A message from replica 1 must pass only if it verifies, and a
+// request it does not verify must pass. A valid message from replica 1 must not
+// pass when another peer sends it. This is the test that shows the transport
+// boundary is the security boundary.
+func TestAccept(t *testing.T) {
+	const n = 4
+	v := diem.NewVerifier(signer(t, 1, n), diem.QuorumSize(n))
 	proposal, vote, timeout := round1(t, 1, n)
 
 	forged := diempb.Signature_builder{Signer: 1, Sig: []byte("forged")}.Build()
@@ -390,27 +418,18 @@ func TestVerifyInterceptor(t *testing.T) {
 
 	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
-			before := rejected.Load()
-			passed := false
-			next := func(gorums.ServerContext, *gorums.Message) (*gorums.Message, error) {
-				passed = true
-				return nil, nil
-			}
-			if _, err := verify(gorums.ServerContext{}, &gorums.Message{Proto: step.msg()}, next); err != nil {
-				t.Fatalf("err = %v, want nil", err)
-			}
-			if passed != step.pass {
-				t.Errorf("reached the handler = %v, want %v", passed, step.pass)
-			}
-			want := before
-			if !step.pass {
-				want++
-			}
-			if got := rejected.Load(); got != want {
-				t.Errorf("rejected = %d, want %d", got, want)
+			if got := accept(v, 1, step.msg()); got != step.pass {
+				t.Errorf("accept = %v, want %v", got, step.pass)
 			}
 		})
 	}
+	t.Run("valid messages sent by another peer", func(t *testing.T) {
+		for _, m := range []proto.Message{proposal, vote, timeout} {
+			if accept(v, 2, m) {
+				t.Errorf("accept(%T from peer 2) = true, want false", m)
+			}
+		}
+	})
 }
 
 // TestHandlerAcceptsWellFormed: well-formed messages of each type must reach

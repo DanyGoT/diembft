@@ -8,35 +8,37 @@ import (
 	"github.com/DanyGoT/diembft/diem"
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"github.com/relab/gorums"
+	"google.golang.org/protobuf/proto"
 )
 
-// VerifyInterceptor drops every proposal, vote and timeout v rejects, and
-// counts it in rejected. Any other request goes on to its handler. It runs on
-// the Gorums handler goroutine, so messages from different senders are
-// authenticated in parallel, before the handler takes the replica's lock.
-//
-// GORUMS: ServerContext exposes no authenticated sender identity — the
-// gorums-node-id metadata key is internal, and peer.FromContext gives an
-// address, not an identity. Every message therefore carries its sender
-// explicitly and is authenticated by signature, never by connection. That costs
-// little, since BFT requires content authentication regardless.
+// VerifyInterceptor drops every message accept refuses, from the peer
+// ctx.SenderID() names, and counts it in rejected. It runs on the Gorums
+// handler goroutine, so messages from different senders are authenticated in
+// parallel, before the handler takes the replica's lock.
 func VerifyInterceptor(v *diem.Verifier, rejected *atomic.Uint64) gorums.ServerInterceptor {
 	return func(ctx gorums.ServerContext, in *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
-		ok := true
-		switch m := in.Proto.(type) {
-		case *diempb.ProposalMsg:
-			ok = v.VerifyProposal(m)
-		case *diempb.VoteMsg:
-			ok = v.VerifyVote(m)
-		case *diempb.TimeoutMsg:
-			ok = v.VerifyTimeout(m)
-		}
-		if !ok {
+		if !accept(v, ctx.SenderID(), in.Proto) {
 			rejected.Add(1)
 			return nil, nil
 		}
 		return next(ctx, in)
 	}
+}
+
+// accept reports whether msg, sent by peer from, may reach its handler. A
+// proposal, vote or timeout must name from as its sender, and v must verify
+// it. No replica relays another's message, so a mismatch is never legitimate.
+// Any other request passes.
+func accept(v *diem.Verifier, from uint32, msg proto.Message) bool {
+	switch m := msg.(type) {
+	case *diempb.ProposalMsg:
+		return m.GetSender() == from && v.VerifyProposal(m)
+	case *diempb.VoteMsg:
+		return m.GetSender() == from && v.VerifyVote(m)
+	case *diempb.TimeoutMsg:
+		return m.GetTmoInfo().GetSender() == from && v.VerifyTimeout(m)
+	}
+	return true
 }
 
 // handler is the inbound half of the transport. It sees only what
