@@ -11,16 +11,23 @@ import (
 )
 
 // Key material is distributed out of band, as PEM files in one directory:
-// <id>.key holds replica id's private key and <id>.pub its public key. This is
-// the smallest thing that lets a cluster start; it is not a key management
-// story, and the report says so.
+// <id>.key holds replica id's private key, <id>.pub its public key and <id>.crt
+// its TLS certificate. This is the smallest thing that lets a cluster start;
+// it is not a key management story, and the report says so.
 
-// WriteKeys writes every replica's key pair into dir as PEM.
+// WriteKeys writes every replica's key pair and certificate into dir as PEM.
 func WriteKeys(dir string, privs map[uint32]*ecdsa.PrivateKey) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	certs, err := Certificates(privs)
+	if err != nil {
+		return err
+	}
 	for id, key := range privs {
+		if err := writePEM(filepath.Join(dir, fmt.Sprintf("%d.crt", id)), "CERTIFICATE", certs[id], 0o644); err != nil {
+			return err
+		}
 		der, err := x509.MarshalECPrivateKey(key)
 		if err != nil {
 			return fmt.Errorf("replica %d private key: %w", id, err)
@@ -89,6 +96,19 @@ func ReadKeys(dir string, id uint32) (*ecdsa.PrivateKey, map[uint32]*ecdsa.Publi
 		}
 	}
 	return priv, pubs, nil
+}
+
+// ReadCerts reads the certificates of replicas 1..n from dir.
+func ReadCerts(dir string, n int) (map[uint32][]byte, error) {
+	certs := make(map[uint32][]byte, n)
+	for id := uint32(1); int(id) <= n; id++ {
+		der, err := readPEM(filepath.Join(dir, fmt.Sprintf("%d.crt", id)), "CERTIFICATE")
+		if err != nil {
+			return nil, err
+		}
+		certs[id] = der
+	}
+	return certs, nil
 }
 
 func writePEM(path, blockType string, der []byte, mode os.FileMode) error {
