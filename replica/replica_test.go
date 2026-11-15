@@ -20,14 +20,9 @@ import (
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchkit"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const testRound = 20 * time.Millisecond
-
-// insecureDial is the loopback dial option every test cluster uses; there is
-// no TLS story here, only the transport.
-var insecureDial = gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 // waitFor polls pred until it holds or timeout passes, so no test needs a
 // sleep to synchronise on a condition.
@@ -44,9 +39,9 @@ func waitFor(timeout time.Duration, pred func() bool) bool {
 	}
 }
 
-// cluster builds n replicas on one process's Gorums local servers, dialing
-// with dial on top of insecureDial, and returns them with a func that runs them
-// under ctx and blocks until every Run has returned.
+// cluster builds n replicas on one process's Gorums local servers, adding dial
+// to their dial options, and returns them with a func that runs them under ctx
+// and blocks until every Run has returned.
 func cluster(t *testing.T, n int, round time.Duration, dial ...gorums.DialOption) ([]*Replica, func(context.Context)) {
 	t.Helper()
 
@@ -55,11 +50,10 @@ func cluster(t *testing.T, n int, round time.Duration, dial ...gorums.DialOption
 		t.Fatalf("GenerateKeys: %v", err)
 	}
 	rejected := new(atomic.Uint64)
-	verify := diemnet.VerifyInterceptor(diem.NewVerifier(diemcrypto.New(nil, pubs), diem.QuorumSize(n)), rejected)
-	srvs, stopSrvs, err := gorums.NewLocalServers(n, gorums.WithLocalDialOptions(append([]gorums.DialOption{insecureDial}, dial...)...),
-		gorums.WithLocalServerOptions(gorums.WithServerInterceptors(verify)))
+	verifier := diem.NewVerifier(diemcrypto.New(nil, pubs), diem.QuorumSize(n))
+	srvs, stopSrvs, err := diemnet.LocalServers(n, verifier, rejected, nil, dial...)
 	if err != nil {
-		t.Fatalf("NewLocalServers: %v", err)
+		t.Fatalf("LocalServers: %v", err)
 	}
 	t.Cleanup(stopSrvs)
 
@@ -228,9 +222,8 @@ func TestStartedWaitsForPeers(t *testing.T) {
 	}
 	lone := New(Config{
 		ID: 1, Key: privs[1], Keys: pubs,
-		Listen:      "127.0.0.1:0",
-		Peers:       map[uint32]string{1: "127.0.0.1:0", 2: down.Addr().String()},
-		DialOptions: []gorums.DialOption{insecureDial},
+		Listen: "127.0.0.1:0",
+		Peers:  map[uint32]string{1: "127.0.0.1:0", 2: down.Addr().String()},
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
