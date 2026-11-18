@@ -105,6 +105,7 @@ func TestSweepFlags(t *testing.T) {
 		"self", "remotes", "benchmarks", "workers", "payload", "time", "output",
 		"rate", "interval", "stats-mode", "rate-step", "rate-step-max",
 		"stream-mode", "cpuprofile", "memprofile", "verbose",
+		"send-buffer", "recv-buffer",
 	} {
 		if fs.Lookup(name) == nil {
 			t.Errorf("flag -%s is not defined", name)
