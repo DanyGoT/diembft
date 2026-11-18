@@ -60,7 +60,7 @@ func TestReport(t *testing.T) {
 func TestWriteResults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.pb")
 	o, _ := parse(t, "-output", path, "-self", "b:2", "-workers", "3", "-payload", "32", "-rate", "100",
-		"-send-buffer", "8", "-time", "2s", "-interval", "100ms", "-stats-mode", "hdr")
+		"-send-buffer", "8", "-recv-buffer", "16", "-time", "2s", "-interval", "100ms", "-stats-mode", "hdr")
 	res := benchkit.Result_builder{Config: benchkit.RunConfig_builder{}.Build()}.Build()
 	if err := o.writeResults(4, []*benchkit.Result{res}); err != nil {
 		t.Fatal(err)
@@ -84,6 +84,7 @@ func TestWriteResults(t *testing.T) {
 		{"payload", cfg.GetPayload(), int32(32)},
 		{"rate", cfg.GetRate(), int64(100)},
 		{"send buffer", cfg.GetSendBuffer(), int32(8)},
+		{"recv buffer", cfg.GetRecvBuffer(), int32(16)},
 		{"duration", cfg.GetDuration(), int64(2 * time.Second)},
 		{"interval", cfg.GetInterval(), int64(100 * time.Millisecond)},
 		{"stats mode", cfg.GetStatsMode(), benchkit.StatsMode_HDR},
