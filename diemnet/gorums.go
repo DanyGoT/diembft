@@ -8,6 +8,7 @@ package diemnet
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,10 +96,10 @@ func nodes(peers map[uint32]string, secure bool) gorums.NodeSource {
 // sets credentials would override them.
 func security(c *tls.Config) (gorums.DialOption, gorums.ServerOption) {
 	if c == nil {
-		return gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials())), nil
+		return gorums.WithTransportCredentials(insecure.NewCredentials()), nil
 	}
 	creds := credentials.NewTLS(c)
-	return gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(creds)),
+	return gorums.WithTransportCredentials(creds),
 		gorums.WithGRPCServerOptions(grpc.Creds(creds))
 }
 
@@ -130,17 +131,17 @@ func LocalServers(n int, v *diem.Verifier, rejected *atomic.Uint64, tlsByID map[
 // server that receives on the other side.
 //
 // A send goes straight into Gorums' per-node send queue, sized with
-// gorums.WithSendBufferSize, and returns once queued: Async, because Send would
-// also wait for every node's stream write. A lost message is what the round
-// timer recovers from.
-// GORUMS: a one-way call waits for space when a node's queue is full, and has
-// no variant that drops instead, so a peer that stops reading blocks the core
-// call that sends to it until its queue drains or Stop.
+// gorums.WithDialBufferSizes, and returns once queued. A node whose queue is
+// full rejects the message, which is counted as a drop, so a peer that stops
+// reading cannot block the core. A lost message is what the round timer
+// recovers from.
 //
 // RequestBlock is the one call with a reply, and an addition: DiemBFT §3
 // defines no block-sync. It lets a replica that lost a proposal vote again.
 type Transport struct {
 	srv      *gorums.Server
+	peers    gorums.Config
+	client   diempb.DiemClient
 	handler  *handler
 	ver      *diem.Verifier
 	rejected *atomic.Uint64
@@ -178,6 +179,8 @@ func New(cfg Config) *Transport {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Transport{
 		srv:      srv,
+		peers:    srv.PeerConfig(),
+		client:   diempb.NewDiemClient(srv.PeerConfig()),
 		handler:  &handler{},
 		ver:      cfg.Verifier,
 		rejected: cfg.Rejected,
@@ -204,9 +207,8 @@ func (t *Transport) serve(h diempb.DiemServer) {
 	})
 }
 
-// Stop ends every send still waiting for queue space and shuts the server
-// down. Call it before stopping the core under its lock, since a core call
-// waiting on a send holds that lock.
+// Stop ends every block fetch and shuts the server down. A send after Stop
+// sends nothing and is not counted as a drop.
 func (t *Transport) Stop() {
 	t.cancel()
 	t.srv.Stop()
@@ -215,31 +217,35 @@ func (t *Transport) Stop() {
 
 // WaitForPeers blocks until every configured peer has connected, or ctx is done.
 func (t *Transport) WaitForPeers(ctx context.Context) error {
-	want := t.srv.PeerConfig().Size()
+	want := t.peers.Size()
 	return t.srv.WaitForPeers(ctx, func(c gorums.Config) bool { return c.Size() >= want })
 }
 
 func (t *Transport) Proposal(p *diempb.ProposalMsg) {
-	if cfg := t.peers(); cfg != nil {
-		diempb.Proposal(cfg.Context(t.ctx), p).Async()
-	}
+	t.count(t.client.Proposal(t.ctx, p).Send())
 }
 
 // Vote unicasts to the leader of the next round, as the paper does: that leader
 // is the only replica that will propose over the certificate these votes form.
 func (t *Transport) Vote(v *diempb.VoteMsg, to uint32) {
-	node := t.srv.PeerConfig().Node(to)
-	if node == nil {
-		t.dropped.Add(1)
-		return
-	}
-	diempb.Vote(node.Context(t.ctx), v).Async()
+	t.count(diempb.NewDiemNodeClient(t.peers.Node(to)).Vote(t.ctx, v).Send())
 }
 
 func (t *Transport) Timeout(m *diempb.TimeoutMsg) {
-	if cfg := t.peers(); cfg != nil {
-		diempb.Timeout(cfg.Context(t.ctx), m).Async()
+	t.count(t.client.Timeout(t.ctx, m).Send())
+}
+
+// count adds one drop per node a send did not reach: a full send queue, an
+// unknown node or an empty configuration.
+func (t *Transport) count(err error) {
+	if err == nil || t.ctx.Err() != nil {
+		return
 	}
+	if qcErr, ok := errors.AsType[gorums.QuorumCallError](err); ok {
+		t.dropped.Add(uint64(qcErr.NumErrors()))
+		return
+	}
+	t.dropped.Add(1)
 }
 
 // RequestBlock runs a quorum call to every peer on its own goroutine, so a slow
@@ -250,33 +256,19 @@ func (t *Transport) Timeout(m *diempb.TimeoutMsg) {
 // Stop does not wait for the goroutine, so a fetch may still be waiting for
 // the lock after it, and a stopped core ignores it.
 func (t *Transport) RequestBlock(id []byte) {
-	if cfg := t.peers(); cfg != nil {
-		go t.fetch(cfg, id)
-	}
+	go t.fetch(id)
 }
 
-func (t *Transport) fetch(cfg gorums.Config, id []byte) {
+func (t *Transport) fetch(id []byte) {
 	ctx, cancel := context.WithTimeout(t.ctx, fetchTimeout)
 	defer cancel()
 	req := diempb.BlockHash_builder{Id: id}.Build()
-	for r := range diempb.RequestBlock(cfg.Context(ctx), req).Results().IgnoreErrors() {
+	for r := range t.client.RequestBlock(ctx, req).Results().IgnoreErrors() {
 		if t.ver.VerifyBlock(r.Value, id) {
 			t.handler.block(r.Value)
 			return
 		}
 	}
-}
-
-// peers is the peer configuration, or nil, counted as a drop, when it is empty.
-// GORUMS: Config.Context panics on an empty Config, so this guard is not
-// optional — which is why it lives in exactly one place.
-func (t *Transport) peers() gorums.Config {
-	cfg := t.srv.PeerConfig()
-	if cfg.Size() == 0 {
-		t.dropped.Add(1)
-		return nil
-	}
-	return cfg
 }
 
 // Counters is a snapshot of what the transport had to discard. A BFT replica

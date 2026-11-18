@@ -340,5 +340,5 @@ func (o *options) mempool() diem.MemPool {
 }
 
 func (o *options) dialOptions() []gorums.DialOption {
-	return []gorums.DialOption{gorums.WithSendBufferSize(o.sendBuffer)}
+	return []gorums.DialOption{gorums.WithDialBufferSizes(0, o.sendBuffer)}
 }
