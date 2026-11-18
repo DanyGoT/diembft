@@ -143,7 +143,12 @@ func (v *Verifier) VerifyProposal(p *diempb.ProposalMsg) bool {
 	if p.GetSig().GetSigner() != p.GetSender() || !verifySig(v.crypto, b.GetId(), p.GetSig()) {
 		return false
 	}
-	return v.VerifyQC(b.GetQc()) && v.verifyCommitQC(p.GetHighCommitQc()) && v.VerifyTC(p.GetLastRoundTc())
+	// On the normal path the QC for round r-1 commits round r-2, so the
+	// commit certificate is the block's own and already checked.
+	commitQC := p.GetHighCommitQc()
+	return v.VerifyQC(b.GetQc()) &&
+		(proto.Equal(commitQC, b.GetQc()) || v.verifyCommitQC(commitQC)) &&
+		v.VerifyTC(p.GetLastRoundTc())
 }
 
 // VerifyTimeout reports whether m is well formed and validly signed, and
