@@ -66,7 +66,7 @@ func (o *options) writeResults(n int, results []*benchkit.Result) error {
 		cfg.ApplyDimensions(benchkit.Dimensions{
 			Benchmark: "diem", Nodes: n,
 			Workers: o.std.Workers, Payload: o.std.Payload, Rate: o.std.Rate,
-			SendBuffer: int(o.sendBuffer),
+			SendBuffer: int(o.sendBuffer), RecvBuffer: int(o.recvBuffer),
 		})
 		cfg.SetDuration(int64(o.std.Duration))
 		cfg.SetInterval(int64(o.std.Interval))
