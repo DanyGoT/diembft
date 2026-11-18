@@ -5,9 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
-	"runtime"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -270,46 +268,38 @@ func (s stalled) SendMsg(any) error {
 	return s.Context().Err()
 }
 
-// sendsWaiting counts the goroutines waiting for space in a full Gorums send
-// queue.
-func sendsWaiting() int {
-	buf := make([]byte, 1<<20)
-	for {
-		if n := runtime.Stack(buf, true); n < len(buf) {
-			buf = buf[:n]
-			break
-		}
-		buf = make([]byte, 2*len(buf))
-	}
-	waiting := 0
-	for g := range strings.SplitSeq(string(buf), "\n\n") {
-		if strings.Contains(g, " [select") && strings.Contains(g, "(*sendQueue).push") {
-			waiting++
-		}
-	}
-	return waiting
-}
-
-// TestRunStopsWhileASendWaits stalls every stream behind a one-slot send
-// queue, so each replica's core ends up waiting for queue space with mu held.
-// Cancelling must still stop every replica.
-func TestRunStopsWhileASendWaits(t *testing.T) {
-	const n = 4
-	_, run := cluster(t, n, testRound, gorums.WithSendBufferSize(1), stallStreams)
+// TestStalledPeersDropInsteadOfBlocking stalls every stream behind a one-slot
+// send queue. Each replica's round timer must keep firing, so its sends fill
+// the queues and are counted as drops instead of blocking the core with mu
+// held, and cancelling must still stop every replica.
+func TestStalledPeersDropInsteadOfBlocking(t *testing.T) {
+	reps, run := cluster(t, 4, testRound, gorums.WithDialBufferSizes(0, 1), stallStreams)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	allDone := make(chan struct{})
 	go func() { run(ctx); close(allDone) }()
 
-	if !waitFor(10*time.Second, func() bool { return sendsWaiting() >= n }) {
-		t.Fatalf("%d sends wait for queue space, want %d", sendsWaiting(), n)
+	dropping := func() bool {
+		for _, r := range reps {
+			if r.Counters().OutboundDropped == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	if !waitFor(10*time.Second, dropping) {
+		for _, r := range reps {
+			if r.Counters().OutboundDropped == 0 {
+				t.Errorf("replica %d: OutboundDropped = 0, want > 0", r.ID())
+			}
+		}
 	}
 	cancel()
 	select {
 	case <-allDone:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return while a send waited for queue space")
+		t.Fatal("Run did not return with every stream stalled")
 	}
 }
 

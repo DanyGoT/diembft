@@ -16,12 +16,12 @@ import (
 // handler goroutine, so messages from different senders are authenticated in
 // parallel, before the handler takes the replica's lock.
 func VerifyInterceptor(v *diem.Verifier, rejected *atomic.Uint64) gorums.ServerInterceptor {
-	return func(ctx gorums.ServerContext, in *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
+	return func(ctx gorums.ServerContext, in *gorums.Message, send func(proto.Message), next gorums.Handler) error {
 		if !accept(v, ctx.SenderID(), in.Proto) {
 			rejected.Add(1)
-			return nil, nil
+			return nil
 		}
-		return next(ctx, in)
+		return next(ctx, in, send)
 	}
 }
 

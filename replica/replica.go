@@ -158,10 +158,8 @@ func (r *Replica) Run(ctx context.Context) error {
 	}
 	<-ctx.Done()
 
-	// A core call may be waiting for space in a full send queue with mu held,
-	// and only the transport's Stop ends that wait. Gorums does not wait for
-	// its handler goroutines on Stop, so a late message can still reach the
-	// core, and a stopped core ignores it.
+	// Gorums does not wait for its handler goroutines on Stop, so a late
+	// message can still reach the core, and a stopped core ignores it.
 	r.net.Stop()
 	r.mu.Lock()
 	r.core.Stop()

@@ -609,7 +609,7 @@ func TestRequestBlockChecksTheID(t *testing.T) {
 				p.tr.serve(&recorder{q: p.q, held: held[p.id]})
 			})
 
-			peers[1].tr.fetch(peers[1].tr.peers(), want.GetId())
+			peers[1].tr.fetch(want.GetId())
 
 			mu.Lock()
 			got := core.Block(want.GetId())
