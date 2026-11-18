@@ -102,6 +102,40 @@ func TestVerifyProposalRejectsCertificateAtOrAboveItsOwnRound(t *testing.T) {
 	}
 }
 
+// countingSigner is a testSigner that counts Verify calls.
+type countingSigner struct {
+	*testSigner
+	verifies int
+}
+
+func (s *countingSigner) Verify(signer uint32, digest, sig []byte) bool {
+	s.verifies++
+	return s.testSigner.Verify(signer, digest, sig)
+}
+
+// TestVerifyProposalChecksSharedCommitQCOnce: on the normal path the QC for
+// round r-1 is both the block's QC and the highest commit QC, and a quorum of
+// signatures is the expensive part of verification.
+func TestVerifyProposalChecksSharedCommitQCOnce(t *testing.T) {
+	crypto := &countingSigner{testSigner: newTestSigner(testN)}
+	v := NewVerifier(crypto, testQuorum)
+	qc := makeQC(voteInfo(hashOf(2), 2, genesisBlock.GetId(), 1), hashOf(9), 1, 2, 3)
+	b := NewBlock(1, 3, [][]byte{{0xaa}}, qc)
+	p := diempb.ProposalMsg_builder{
+		Block:        b,
+		HighCommitQc: proto.Clone(qc).(*diempb.QuorumCert),
+		Sender:       1,
+		Sig:          signAs(1, b.GetId()),
+	}.Build()
+	if !v.VerifyProposal(p) {
+		t.Fatal("VerifyProposal = false for a valid proposal, want true")
+	}
+	// The proposal signature, the quorum and the QC's author signature.
+	if want := 1 + testQuorum + 1; crypto.verifies != want {
+		t.Errorf("VerifyProposal made %d signature checks, want %d", crypto.verifies, want)
+	}
+}
+
 // TestVerifyTCRejectsRoundZero covers a guard, not a fix: safeToTimeout
 // refuses round 0, so a quorum of round-0 timeouts is unreachable from honest
 // replicas and no bug was ever exploitable here. The check is free.
