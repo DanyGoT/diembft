@@ -51,6 +51,7 @@ type options struct {
 	genKeys        bool
 	viewDuration   time.Duration
 	sendBuffer     uint
+	recvBuffer     uint
 	faultReplica   int
 }
 
@@ -63,6 +64,7 @@ func newOptions(fs *flag.FlagSet) *options {
 	fs.BoolVar(&o.genKeys, "gen-keys", false, "write a key pair and TLS certificate per replica into -keys and exit")
 	fs.DurationVar(&o.viewDuration, "view-duration", 0, "round timer α; it grows by α/2 per round since the last commit; 0 picks a default")
 	fs.UintVar(&o.sendBuffer, "send-buffer", 0, "Gorums send queue capacity per peer; 0 picks Gorums' default")
+	fs.UintVar(&o.recvBuffer, "recv-buffer", 0, "Gorums receive queue capacity per stream; 0 picks Gorums' default")
 	fs.IntVar(&o.faultReplica, "fault-replica", 1, "the replica -fault-kill-after stops, counted from its first round as -time is; every node gets the same sweep -extra-args, so only this one exits")
 	return o
 }
@@ -162,7 +164,7 @@ func (o *options) runLocal(n int) error {
 	}
 	rejected := new(atomic.Uint64)
 	verifier := diem.NewVerifier(diemcrypto.New(nil, pubs), diem.QuorumSize(n))
-	srvs, stop, err := diemnet.LocalServers(n, verifier, rejected, tlsByID, o.dialOptions()...)
+	srvs, stop, err := diemnet.LocalServers(n, verifier, rejected, tlsByID, o.serverOptions(), o.dialOptions()...)
 	if err != nil {
 		return err
 	}
@@ -245,10 +247,11 @@ func (o *options) runOne() error {
 	return o.runAll(len(addrs), []*replica.Replica{replica.New(replica.Config{
 		ID: id, Peers: peers, Listen: self, TLS: tlsConfig,
 		Key: priv, Keys: pubs,
-		MemPool:      o.mempool(),
-		RoundTimeout: o.viewDuration,
-		Measure:      o.std.Options(),
-		DialOptions:  o.dialOptions(),
+		MemPool:       o.mempool(),
+		RoundTimeout:  o.viewDuration,
+		Measure:       o.std.Options(),
+		DialOptions:   o.dialOptions(),
+		ServerOptions: o.serverOptions(),
 	})}, target)
 }
 
@@ -340,5 +343,9 @@ func (o *options) mempool() diem.MemPool {
 }
 
 func (o *options) dialOptions() []gorums.DialOption {
-	return []gorums.DialOption{gorums.WithDialBufferSizes(0, o.sendBuffer)}
+	return []gorums.DialOption{gorums.WithDialBufferSizes(o.recvBuffer, o.sendBuffer)}
+}
+
+func (o *options) serverOptions() []gorums.ServerOption {
+	return []gorums.ServerOption{gorums.WithBufferSizes(o.recvBuffer, o.sendBuffer)}
 }

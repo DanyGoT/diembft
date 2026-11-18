@@ -145,7 +145,7 @@ func group(t *testing.T, n int, tlsByID map[uint32]*tls.Config, start func(*peer
 func localServers(t *testing.T, n int, c diem.Crypto, tlsByID map[uint32]*tls.Config) ([]*gorums.Server, *atomic.Uint64, func()) {
 	t.Helper()
 	rejected := new(atomic.Uint64)
-	srvs, stop, err := LocalServers(n, diem.NewVerifier(c, diem.QuorumSize(n)), rejected, tlsByID)
+	srvs, stop, err := LocalServers(n, diem.NewVerifier(c, diem.QuorumSize(n)), rejected, tlsByID, nil)
 	if err != nil {
 		t.Fatalf("LocalServers: %v", err)
 	}

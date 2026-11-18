@@ -49,7 +49,7 @@ func cluster(t *testing.T, n int, round time.Duration, dial ...gorums.DialOption
 	}
 	rejected := new(atomic.Uint64)
 	verifier := diem.NewVerifier(diemcrypto.New(nil, pubs), diem.QuorumSize(n))
-	srvs, stopSrvs, err := diemnet.LocalServers(n, verifier, rejected, nil, dial...)
+	srvs, stopSrvs, err := diemnet.LocalServers(n, verifier, rejected, nil, nil, dial...)
 	if err != nil {
 		t.Fatalf("LocalServers: %v", err)
 	}
