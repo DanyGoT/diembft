@@ -143,12 +143,7 @@ func (v *Verifier) VerifyProposal(p *diempb.ProposalMsg) bool {
 	if p.GetSig().GetSigner() != p.GetSender() || !verifySig(v.crypto, b.GetId(), p.GetSig()) {
 		return false
 	}
-	// On the normal path the QC for round r-1 commits round r-2, so the
-	// commit certificate is the block's own and already checked.
-	commitQC := p.GetHighCommitQc()
-	return v.VerifyQC(b.GetQc()) &&
-		(proto.Equal(commitQC, b.GetQc()) || v.verifyCommitQC(commitQC)) &&
-		v.VerifyTC(p.GetLastRoundTc())
+	return v.VerifyQC(b.GetQc()) && v.verifyCommitQC(p.GetHighCommitQc(), b.GetQc()) && v.VerifyTC(p.GetLastRoundTc())
 }
 
 // VerifyTimeout reports whether m is well formed and validly signed, and
@@ -162,7 +157,7 @@ func (v *Verifier) VerifyTimeout(m *diempb.TimeoutMsg) bool {
 		!verifySig(v.crypto, diempb.TimeoutDigest(t.GetRound(), t.GetHighQc().Round()), t.GetSig()) {
 		return false
 	}
-	return v.VerifyQC(t.GetHighQc()) && v.verifyCommitQC(m.GetHighCommitQc()) && v.VerifyTC(m.GetLastRoundTc())
+	return v.VerifyQC(t.GetHighQc()) && v.verifyCommitQC(m.GetHighCommitQc(), t.GetHighQc()) && v.VerifyTC(m.GetLastRoundTc())
 }
 
 // VerifyVote reports whether m is validly signed by its sender.
@@ -178,12 +173,16 @@ func (v *Verifier) VerifyVote(m *diempb.VoteMsg) bool {
 	if !verifySig(v.crypto, m.GetLedgerCommitInfo().Digest(), m.GetSig()) {
 		return false
 	}
-	return v.verifyCommitQC(m.GetHighCommitQc())
+	return v.verifyCommitQC(m.GetHighCommitQc(), nil)
 }
 
 // verifyCommitQC accepts an absent commit certificate: it is a catch-up hint,
-// not evidence anything depends on.
-func (v *Verifier) verifyCommitQC(qc *diempb.QuorumCert) bool { return qc == nil || v.VerifyQC(qc) }
+// not evidence anything depends on. It skips one equal to checked, a
+// certificate the caller has verified already: when the last QC committed, it
+// is also the highest commit QC.
+func (v *Verifier) verifyCommitQC(qc, checked *diempb.QuorumCert) bool {
+	return qc == nil || proto.Equal(qc, checked) || v.VerifyQC(qc)
+}
 
 // VerifyBlock reports whether b is the block with the given id. The id is a
 // hash over every field, so one block that passes is the block itself.

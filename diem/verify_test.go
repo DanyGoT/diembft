@@ -113,26 +113,43 @@ func (s *countingSigner) Verify(signer uint32, digest, sig []byte) bool {
 	return s.testSigner.Verify(signer, digest, sig)
 }
 
-// TestVerifyProposalChecksSharedCommitQCOnce: on the normal path the QC for
-// round r-1 is both the block's QC and the highest commit QC, and a quorum of
+// TestVerifyChecksSharedCommitQCOnce: when the last QC committed, it is both
+// the certificate a message carries and its highest commit QC, and a quorum of
 // signatures is the expensive part of verification.
-func TestVerifyProposalChecksSharedCommitQCOnce(t *testing.T) {
-	crypto := &countingSigner{testSigner: newTestSigner(testN)}
-	v := NewVerifier(crypto, testQuorum)
+func TestVerifyChecksSharedCommitQCOnce(t *testing.T) {
 	qc := makeQC(voteInfo(hashOf(2), 2, genesisBlock.GetId(), 1), hashOf(9), 1, 2, 3)
+	commitQC := proto.Clone(qc).(*diempb.QuorumCert)
 	b := NewBlock(1, 3, [][]byte{{0xaa}}, qc)
 	p := diempb.ProposalMsg_builder{
 		Block:        b,
-		HighCommitQc: proto.Clone(qc).(*diempb.QuorumCert),
+		HighCommitQc: commitQC,
 		Sender:       1,
 		Sig:          signAs(1, b.GetId()),
 	}.Build()
-	if !v.VerifyProposal(p) {
-		t.Fatal("VerifyProposal = false for a valid proposal, want true")
-	}
-	// The proposal signature, the quorum and the QC's author signature.
-	if want := 1 + testQuorum + 1; crypto.verifies != want {
-		t.Errorf("VerifyProposal made %d signature checks, want %d", crypto.verifies, want)
+	m := diempb.TimeoutMsg_builder{
+		TmoInfo: diempb.TimeoutInfo_builder{
+			Round:  3,
+			HighQc: qc,
+			Sender: 1,
+			Sig:    signAs(1, diempb.TimeoutDigest(3, 2)),
+		}.Build(),
+		HighCommitQc: commitQC,
+	}.Build()
+
+	for name, verify := range map[string]func(*Verifier) bool{
+		"proposal": func(v *Verifier) bool { return v.VerifyProposal(p) },
+		"timeout":  func(v *Verifier) bool { return v.VerifyTimeout(m) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			crypto := &countingSigner{testSigner: newTestSigner(testN)}
+			if !verify(NewVerifier(crypto, testQuorum)) {
+				t.Fatal("verification = false for a valid message, want true")
+			}
+			// The message signature, the quorum and the QC's author signature.
+			if want := 1 + testQuorum + 1; crypto.verifies != want {
+				t.Errorf("made %d signature checks, want %d", crypto.verifies, want)
+			}
+		})
 	}
 }
 
