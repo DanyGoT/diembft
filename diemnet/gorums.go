@@ -250,9 +250,9 @@ func (t *Transport) count(err error) {
 }
 
 // RequestBlock runs a quorum call to every peer on its own goroutine, so a slow
-// fetch holds up no other send. Any reply whose recomputed id is the one asked
-// for is the block, so the first such reply goes to the core and the rest are
-// dropped. First would take the first reply without checking it.
+// fetch holds up no other send. Any reply that passes VerifyBlock is the
+// block, so the first such reply goes to the core and the rest are dropped.
+// First would take the first reply without checking it.
 //
 // Stop does not wait for the goroutine, so a fetch may still be waiting for
 // the lock after it, and a stopped core ignores it.

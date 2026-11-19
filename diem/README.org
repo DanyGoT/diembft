@@ -119,10 +119,11 @@ misses an ancestor cannot speculate, so it holds the block and asks every peer
 for the oldest block missing below it (=core.go:insert=). It is a *quorum call*: a unicast has no
 reply, and asking every peer means one slow or Byzantine peer cannot hold the
 fetch up. The replies are read with =Results()=, and the first block whose
-recomputed id is the one asked for is taken (=verify.go:VerifyBlock=); =First()=
-would take the first reply unchecked. The replica still declines the vote in
-hand and votes again from the next proposal. =Safety.DeclinedMissingAncestor()=
-counts those declines, which is what makes the gap measurable.
+recomputed id is the one asked for, and whose QC verifies, is taken
+(=verify.go:VerifyBlock=); =First()= would take the first reply unchecked. The
+replica still declines the vote in hand and votes again from the next proposal.
+=Safety.DeclinedMissingAncestor()= counts those declines, which is what makes
+the gap measurable.
 
 It is not rare. Message *reordering alone*, with nothing dropped and nothing
 malformed, is enough to trigger it: Gorums gives per-sender FIFO, but rounds
