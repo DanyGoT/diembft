@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DanyGoT/diembft/proto/diempb"
+	"google.golang.org/protobuf/proto"
 )
 
 // sim is a deterministic N-replica harness: one shared fake clock, one FIFO
@@ -31,8 +32,11 @@ type sim struct {
 	// tamper, if set, stands between a sender and the network: it turns one
 	// message for one replica into whatever that replica receives instead.
 	tamper func(to uint32, m any) []any
-	// invalid is how many tampered messages the test built to fail edge
-	// verification; exactly that many must be rejected.
+	// serve, if set, stands between a replica and a block request it answers:
+	// it turns the block the replica holds into the one it serves.
+	serve func(peer uint32, b *diempb.Block) *diempb.Block
+	// invalid is how many tampered messages and served blocks the test built
+	// to fail edge verification; exactly that many must be rejected.
 	invalid int
 }
 
@@ -106,7 +110,7 @@ func (s *sim) verify(to uint32, m any) bool {
 	case *diempb.TimeoutMsg:
 		return v.VerifyTimeout(m)
 	}
-	return true // a fetched block, checked against its id by RequestBlock
+	return true // a fetched block, verified by RequestBlock
 }
 
 // step hands m to the Core method for its type.
@@ -196,15 +200,24 @@ func (n *simNet) Timeout(m *diempb.TimeoutMsg)      { n.s.broadcast(m) }
 
 // RequestBlock asks the live replicas in turn, as one queued step, and delivers
 // the first block that passes the requester's check: the quorum call of
-// diemnet, in a fixed order.
+// diemnet, in a fixed order. A block that fails the check counts as rejected.
 func (n *simNet) RequestBlock(id []byte) {
 	n.s.fetches[string(id)]++
 	n.s.queue = append(n.s.queue, func() {
 		for _, peer := range n.s.live() {
-			if b := n.s.cores[peer].Block(id); n.s.vers[n.id].VerifyBlock(b, id) {
-				n.s.deliver(n.id, b)
-				return
+			b := n.s.cores[peer].Block(id)
+			if b == nil {
+				continue
 			}
+			if n.s.serve != nil {
+				b = n.s.serve(peer, b)
+			}
+			if !n.s.vers[n.id].VerifyBlock(b, id) {
+				n.s.rejected++
+				continue
+			}
+			n.s.deliver(n.id, b)
+			return
 		}
 	})
 }
@@ -547,6 +560,36 @@ func TestReorderedProposalsRecover(t *testing.T) {
 
 	if held == nil {
 		t.Fatal("no proposal for round 3 reached replica 4")
+	}
+	s.checkProgress(8)
+	s.checkAgreement()
+	s.checkChained()
+}
+
+// TestAlteredFetchedQCIsRejected drops the round-3 proposal for replica 4, and
+// replica 1, asked first, serves that block with its QC's round lowered. The
+// block id does not cover the round, so only the QC check turns the copy away,
+// and replica 4 must take the block from the next peer.
+func TestAlteredFetchedQCIsRejected(t *testing.T) {
+	s := newSim(t, 4)
+	s.tamper = proposalTo(4, 3, func(any) []any { return nil })
+	s.serve = func(peer uint32, b *diempb.Block) *diempb.Block {
+		if peer != 1 || b.GetRound() != 3 {
+			return b
+		}
+		altered := proto.Clone(b).(*diempb.Block)
+		vi := altered.GetQc().GetVoteInfo()
+		vi.SetRound(vi.GetRound() - 1)
+		if !altered.ValidID() {
+			t.Fatal("lowering the QC round changed the block id")
+		}
+		s.invalid++
+		return altered
+	}
+	s.run(4000)
+
+	if s.invalid == 0 {
+		t.Fatal("replica 1 never served the round-3 block")
 	}
 	s.checkProgress(8)
 	s.checkAgreement()

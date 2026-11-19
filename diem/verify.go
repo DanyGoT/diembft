@@ -184,8 +184,10 @@ func (v *Verifier) verifyCommitQC(qc, checked *diempb.QuorumCert) bool {
 	return qc == nil || proto.Equal(qc, checked) || v.VerifyQC(qc)
 }
 
-// VerifyBlock reports whether b is the block with the given id. The id is a
-// hash over every field, so one block that passes is the block itself.
+// VerifyBlock reports whether b is the block with the given id and its QC
+// holds up. The id covers the QC's block id and signatures but not the rest of
+// it, so only the QC check binds its vote and commit info to the quorum that
+// signed.
 func (v *Verifier) VerifyBlock(b *diempb.Block, id []byte) bool {
-	return bytes.Equal(b.GetId(), id) && b.ValidID()
+	return bytes.Equal(b.GetId(), id) && b.ValidID() && v.VerifyQC(b.GetQc())
 }

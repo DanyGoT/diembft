@@ -141,7 +141,8 @@ func (c *Core) Block(id []byte) *diempb.Block {
 
 // OnBlock inserts a block fetched from a peer. The edge has checked that its
 // recomputed id is the one this replica asked for, and that id came from a
-// verified certificate, so it is the block a quorum voted on.
+// verified certificate, so it is the block a quorum voted on. The edge has
+// verified its QC too, which the id does not wholly cover.
 //
 // A block the ledger already knows is dropped. It answers a request that was
 // sent again, and inserting it twice would start a second walk down the same
