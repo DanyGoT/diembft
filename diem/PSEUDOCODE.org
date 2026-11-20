@@ -249,8 +249,9 @@ A block for the current round over the highest certificate known.
 * 3.4 Safety
 
 The module holds exactly two counters (=safety.go:highestVoteRound= and
-=highestQCRound=) plus the private key,
-which is what would let it live in a trusted component.
+=highestQCRound=). The paper also gives it the private key alone, which is what
+would let it live in a trusted component. Here the key is shared across the
+replica (see =valid_signatures=).
 
 ** increase_highest_vote_round(round)
 
@@ -325,6 +326,7 @@ build the =VoteInfo= and =LedgerCommitInfo= and sign the latter.
   has not yet fetched an ancestor — has no result to claim. Note the ordering
   consequence: the counters move only on the path that produces a vote, so a
   declined vote does not burn the round.
+- Differs :: no re-verification; see =valid_signatures=.
 
 ** make_timeout(round, high_qc, last_tc)
 
@@ -333,17 +335,20 @@ in the round, and sign =(round, high_qc.round)=.
 
 - Implemented :: =safety.go:MakeTimeout=; the digest is
   =proto/diempb/hash.go:TimeoutDigest=.
-- Faithful :: no deviation.
+- Differs :: no re-verification; see =valid_signatures=.
 
 ** valid_signatures(b, last_tc)
 
 The paper calls this from both public procedures but never defines it.
 
-- Implemented :: =safety.go:validSignatures=, which routes to
-  =verify.go:VerifyQC= and =VerifyTC= —
-  the same implementations the edge uses. Safety re-verifies deliberately: it
-  holds the private key and is the one module assumed to survive the rest being
-  compromised.
+- Implemented :: not in Safety. =verify.go:VerifyQC=, =VerifyTC= and the block id
+  check run at the edge only.
+- Differs :: the paper re-checks inside Safety so that Safety outlasts a
+  compromise of the rest of the replica. Here Safety shares the process and the
+  key with the rest, so a compromised process is Byzantine, and a re-check would
+  protect nothing but cost signature verifies under the replica's lock on every
+  vote. Safety's callers pass only certificates the edge verified, or ones built
+  from votes and timeouts the edge verified (=safety.go:Safety=).
 
 * 3.5 Pacemaker
 
@@ -410,8 +415,8 @@ locally as well (Bracha amplification), at 2f+1 return the TC.
   2. It sorts the assembled TC's votes into signer order. Timeouts arrive in
      whatever order the network delivers them, and a receiver rejects a
      non-canonical certificate (=verify.go:VerifyTC=), so a replica whose
-     timeouts arrived out of ID order would otherwise assemble a TC that neither
-     its peers nor its own =Safety.validSignatures= would accept.
+     timeouts arrived out of ID order would otherwise assemble a TC that its
+     peers would reject.
 
 ** advance_round_tc(tc)
 
@@ -494,7 +499,8 @@ Section 3 is a protocol, not a program. These are what it takes to run one.
   the genesis block before its id exists.
 - The edge verifier :: =verify.go:Verifier=, called from the Gorums server
   interceptor =diemnet/server.go:VerifyInterceptor=. The paper's only
-  verification hook is =valid_signatures= inside =Safety=. Splitting it out is
+  verification hook is =valid_signatures= inside =Safety=, and here the edge is
+  the only one (see =valid_signatures=). Splitting it out is
   what lets signature checking run on the handler goroutines, in parallel across
   senders. Two of its checks have no paper counterpart at all: =VerifyProposal=
   rejects a block whose QC is not from a round below its own (well-formedness

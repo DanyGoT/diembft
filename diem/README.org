@@ -80,9 +80,9 @@ the round check, which does need this replica's round, because the paper puts
 all three in =process_proposal_msg= (=core.go:OnProposal=).
 
 =core.go= therefore holds exactly one crypto call — =Sign=, when this replica
-proposes. =Safety= re-verifies what it is about to sign over, which is
-deliberate: it holds the private key and is the one module assumed to survive
-the rest being compromised.
+proposes. =Safety= re-verifies nothing. It shares the process and the key with
+the rest of the replica, so it trusts what the edge checked
+(=PSEUDOCODE.org=, =valid_signatures=).
 
 * Interfaces
 

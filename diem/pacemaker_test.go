@@ -38,7 +38,7 @@ func newTestPacemaker(t *testing.T, n int) (*Pacemaker, *fakeClock, *recordNet) 
 	ledger := NewMemLedger()
 	crypto := newTestSigner(n)
 	tree := NewBlockTree(1, quorum, ledger, crypto)
-	safety := NewSafety(1, NewVerifier(crypto, quorum), crypto, ledger, tree)
+	safety := NewSafety(1, crypto, ledger, tree)
 	dur := RoundTimer{Alpha: testAlpha, Beta: testBeta}
 	pm := NewPacemaker(quorum, faulty, clock, dur, new(sync.Mutex), net, safety, tree)
 	return pm, clock, net

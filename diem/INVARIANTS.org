@@ -3,13 +3,14 @@
 Terse restatement of what the DiemBFT proofs need. Code pointers are
 =file.go:Func= in =diem/=. The paper has three validator kinds: Byzantine
 (fully adversarial), compromised (adversarial outside Safety) and honest;
-"non-Byzantine" = honest + compromised.
+"non-Byzantine" = honest + compromised. Here Safety shares the process and the key
+with the rest of the replica, so a compromised replica is Byzantine.
 
 * 1. Model and assumptions
 - At most f < n/3 Byzantine; quorum = 2f+1 for n = 3f+1 (=quorum.go:QuorumSize=, =Faulty=).
 - Any two quorums share >= 1 non-Byzantine validator; any quorum holds >= f+1.
 - Signatures unforgeable; hashes collision-resistant; private key lives only in Safety
-  (=safety.go:Safety=).
+  (paper only: here it is shared across the replica, =safety.go:Safety=).
 - Partial synchrony: GST happens after an unknown finite time; a message sent at t
   arrives by max{t, GST}+\Delta, with \Delta known.
 - Transport delivers reliably and fetches referenced data; Lemma 6 needs finite
@@ -17,7 +18,7 @@ Terse restatement of what the DiemBFT proofs need. Code pointers are
 - Round-r proposal/timeout is well-formed iff it carries TC(r-1) whenever its qc is
   not from r-1. Honest replicas send only well-formed messages and discard others.
 - Non-Byzantine replicas vote at most once per round and never lower their counters.
-- Compromised replicas may commit anything locally (commit info lives outside Safety)
+- Paper only: compromised replicas may commit anything locally (commit info lives outside Safety)
   but cannot make honest ones violate Agreement.
 
 * 2. DiemBFT v4 (2-chain; the protocol this code implements)
@@ -91,7 +92,7 @@ rounds in every rotation, its own two and the one before, whose votes go to it.
 | block extends lower round | block.qc.round < block.round; edge check ahead of safe_to_vote | =verify.go:VerifyProposal=, =safety.go:safeToVote= |
 | QC validity | at least a quorum of distinct signers in canonical order, every signature valid, over the LedgerCommitInfo, which binds the VoteInfo hash; author signature; a commit only over a 2-chain | =verify.go:VerifyQC=, =verifyCert= |
 | TC validity | quorum of distinct signers, each over (round, own high_qc_round) | =verify.go:VerifyTC= |
-| Safety re-verifies | QC, TC and block id re-checked before signing; the author signature stays at the edge | =safety.go:validSignatures=, =MakeVote=, =proto/diempb/hash.go:ValidID= |
+| edge verifies | QC, TC, block id and author signature checked at the edge only; Safety's inputs come from the edge or are built from votes and timeouts it checked (paper: Safety re-checks in valid_signatures) | =verify.go:Verifier=, =safety.go:Safety= |
 | one vote per signer/round | duplicate votes cannot reach a quorum | =blocktree.go:ProcessVote= |
 | proposer is leader | proposal round = current round, sender = author = leader | =core.go:OnProposal= |
 | vote to next leader | vote unicast to leader of r+1 | =core.go:OnProposal= |
