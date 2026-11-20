@@ -233,6 +233,13 @@ func (s *sim) live() []uint32 {
 	return out
 }
 
+// crash stops replica id in the middle of a run: it receives nothing more, its
+// timer is disarmed, and nothing already queued for it takes effect.
+func (s *sim) crash(id uint32) {
+	s.down[id] = true
+	s.cores[id].Stop()
+}
+
 // checkAgreement is the safety property: no two replicas commit different
 // blocks at the same height, so the shorter commit log is always a prefix of
 // the longer.
@@ -592,6 +599,44 @@ func TestAlteredFetchedQCIsRejected(t *testing.T) {
 		t.Fatal("replica 1 never served the round-3 block")
 	}
 	s.checkProgress(8)
+	s.checkAgreement()
+	s.checkChained()
+}
+
+// TestLostProposalThenCrash loses the round-3 proposal for replica 4, then
+// crashes replica 3 in round 10. That leaves 1, 2 and 4, a bare quorum, so no
+// round after the crash certifies without replica 4's vote: it must have
+// fetched the block it missed and vote again.
+func TestLostProposalThenCrash(t *testing.T) {
+	const crashRound = 10
+	s := newSim(t, 4)
+	dropped := false
+	drop := proposalTo(4, 3, func(any) []any { dropped = true; return nil })
+	s.tamper = func(to uint32, m any) []any {
+		if p, ok := m.(*diempb.ProposalMsg); ok && p.GetBlock().GetRound() == crashRound && !s.down[3] {
+			s.crash(3)
+		}
+		return drop(to, m)
+	}
+	s.run(4000)
+
+	if !dropped {
+		t.Fatal("no proposal for round 3 reached replica 4")
+	}
+	if !s.down[3] {
+		t.Fatalf("no proposal for round %d, so replica 3 never crashed", crashRound)
+	}
+	for _, id := range s.live() {
+		after := 0
+		for _, b := range s.commits[id] {
+			if b.GetRound() > crashRound {
+				after++
+			}
+		}
+		if after < 3 {
+			t.Fatalf("replica %d committed %d blocks from after round %d, want at least 3", id, after, crashRound)
+		}
+	}
 	s.checkAgreement()
 	s.checkChained()
 }
