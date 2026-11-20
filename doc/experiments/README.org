@@ -41,8 +41,9 @@ commit at all. Results land under =OUT=. =scripts/uis.sh= with no argument
 lists the other commands (=scale=, =load=, =rate=, =long=, =collect=,
 =plot=, =all=).
 
-diem has no clients, so it reads sweep's =-workers= as the batch: the most
-commands a leader puts in one block (unused with =-payload 0=, where blocks
-are empty). In diem's result files and reports the
-Workers column is that batch, not a number of concurrent callers as in other
-benchkit programs.
+Each diem replica runs sweep's =-workers= clients in its own process, each
+with one command of =-payload= bytes in flight, like the callers of other
+benchkit programs. =-workers 0= proposes empty blocks.
+=-batch=, the most commands in one block, is not a sweep dimension: pass it in
+=-extra-args=. An op in diem's result files is a committed command, timed
+submit to commit.

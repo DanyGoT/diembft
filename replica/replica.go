@@ -31,10 +31,6 @@ type Config struct {
 	Key  *ecdsa.PrivateKey
 	Keys map[uint32]*ecdsa.PublicKey
 
-	// MemPool, if set, supplies a leader's payload in place of the commands
-	// clients Submit.
-	MemPool diem.MemPool
-
 	// Batch is the most submitted commands per block, and PoolSize the most
 	// submitted and not yet committed. 0 picks a default.
 	Batch, PoolSize int
@@ -67,9 +63,12 @@ type Replica struct {
 	commits  []*diempb.Block
 	commands uint64
 	pool     *pool
-	external bool // Config.MemPool replaces the pool
 	stopped  bool // Run has returned
 	onCommit func(*diempb.Block)
+
+	// proposeToCommit sums the propose-to-commit latency of own blocks.
+	proposeToCommit time.Duration
+	ownCommits      uint64
 
 	measure benchkit.Options
 	m       *benchkit.Measurement
@@ -103,14 +102,9 @@ func New(cfg Config) *Replica {
 	r := &Replica{
 		id:       cfg.ID,
 		pool:     &pool{batch: cfg.Batch, size: cfg.PoolSize},
-		external: cfg.MemPool != nil,
 		onCommit: cfg.OnCommit,
 		measure:  cfg.Measure,
 		started:  make(chan struct{}),
-	}
-	var mempool diem.MemPool = r.pool
-	if r.external {
-		mempool = cfg.MemPool
 	}
 	ledger := diem.NewMemLedger()
 	ledger.OnCommit = r.commit
@@ -129,7 +123,7 @@ func New(cfg Config) *Replica {
 		Clock:      diem.SystemClock{},
 		RoundTimer: diem.RoundTimer{Alpha: cfg.RoundTimeout, Beta: cfg.RoundTimeout / 2},
 		Lock:       &r.mu,
-		MemPool:    mempool,
+		MemPool:    r.pool,
 	})
 	return r
 }
@@ -146,13 +140,14 @@ func (s stamper) Proposal(p *diempb.ProposalMsg) {
 }
 
 // commit appends b to the log and, for a block this replica proposed, records
-// its propose-to-commit latency and tells its commands' clients. OnCommit runs
-// first, so a client sees its command applied. It runs inside a core call, so
-// mu is already held.
+// its propose-to-commit latency and its commands' submit-to-commit latency and
+// tells their clients. OnCommit runs first, so a client sees its command
+// applied. It runs inside a core call, so mu is already held.
 func (r *Replica) commit(b *diempb.Block) {
 	own, ok := r.pool.committed(b, r.id)
 	if ok {
-		r.m.Stats.AddLatency(time.Since(own.sent))
+		r.proposeToCommit += time.Since(own.sent)
+		r.ownCommits++
 	}
 	r.commits = append(r.commits, b)
 	r.commands += uint64(len(b.GetPayload()))
@@ -160,22 +155,20 @@ func (r *Replica) commit(b *diempb.Block) {
 		r.onCommit(b)
 	}
 	for _, e := range own.entries {
+		r.m.Stats.AddLatency(time.Since(e.submitted))
 		close(e.done)
 	}
 }
 
 // Submit offers a copy of cmd for ordering; done closes once it is committed
-// here. It returns false before Started, after Run has returned, when
-// Config.MemPool replaces the pool, or when PoolSize commands are already
-// waiting. A done still open when Run returns never closes.
+// here. It returns false before Started, after Run has returned, or when
+// PoolSize commands are already waiting. A done still open when Run returns
+// never closes.
 func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
 	select {
 	case <-r.started:
 	default:
 		return nil, false // Run holds mu until every peer is connected
-	}
-	if r.external {
-		return nil, false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -223,8 +216,8 @@ func (r *Replica) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// Result is the run's measurement: an op is a committed block this replica
-// proposed, timed propose to commit on its own clock. Read it only after Run
+// Result is the run's measurement: an op is a committed command submitted to
+// this replica, timed submit to commit on its own clock. Read it only after Run
 // returns; it is nil if Run never reached the first round.
 func (r *Replica) Result() *benchkit.Result { return r.result }
 
@@ -241,6 +234,17 @@ func (r *Replica) Log() []*diempb.Block {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]*diempb.Block(nil), r.commits...)
+}
+
+// ProposeToCommit is the mean time from sending a proposal to committing it,
+// over the committed blocks this replica proposed.
+func (r *Replica) ProposeToCommit() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ownCommits == 0 {
+		return 0
+	}
+	return r.proposeToCommit / time.Duration(r.ownCommits)
 }
 
 // Commands is how many commands the committed blocks carried.

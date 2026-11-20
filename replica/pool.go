@@ -24,8 +24,9 @@ type pool struct {
 
 // entry is a submitted command; done closes once it commits.
 type entry struct {
-	cmd  []byte
-	done chan struct{}
+	cmd       []byte
+	submitted time.Time
+	done      chan struct{}
 }
 
 // flight is one of this replica's sent proposals.
@@ -40,7 +41,7 @@ func (p *pool) add(cmd []byte) (<-chan struct{}, bool) {
 	if p.held >= p.size {
 		return nil, false
 	}
-	e := entry{cmd: cmd, done: make(chan struct{})}
+	e := entry{cmd: cmd, submitted: time.Now(), done: make(chan struct{})}
 	p.queue = append(p.queue, e)
 	p.held++
 	return e.done, true

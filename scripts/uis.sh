@@ -8,9 +8,9 @@
 #   ssh-config  print the ~/.ssh/config block sweep needs (needs UIS_USER)
 #   check       sweep's own diagnostics: ssh, jump host, clocks, ports
 #   smoke       n=4, 10s — does it commit at all
-#   scale       n=4,7,10,13 x payload 0/1024, batch 64
-#   load        n=4, payload 128/1024/4096 x batch 1/16/256
-#   rate        n=4, 1 KiB commands, batch 256, at 500/2000/8000/unthrottled per second
+#   scale       n=4,7,10,13 x payload 0/1024, 64 clients per replica
+#   load        n=4, payload 128/1024/4096 x 1/16/256 clients per replica
+#   rate        n=4, 1 KiB commands, 256 clients, at 500/2000/8000/unthrottled per second
 #               scale, load and rate run 20s per point, 3 repetitions
 #   long        n=4 for 10 minutes, detached on a driver VM
 #   collect     fetch the results of the last detached run
@@ -53,8 +53,9 @@ run() {
         -extra-args -insecure-seeded-keys "$@"
 }
 
-# -workers is diem's batch: commands per proposal. Payload 0 proposes empty
-# blocks, so batch only matters with a payload.
+# -workers is diem's clients per replica, each with one command in flight; a
+# block carries at most diem's default -batch of 64. Payload 0 sends empty
+# commands; only -workers 0 proposes empty blocks.
 scale() { run scale -driver first -n 4,7,10,13 -payload 0,1024 -workers 64 -reps 3 -duration 20s; }
 load() { run load -n 4 -payload 128,1024,4096 -workers 1,16,256 -reps 3 -duration 20s; }
 rate() { run rate -n 4 -payload 1024 -workers 256 -rate 500,2000,8000,0 -reps 3 -duration 20s; }
