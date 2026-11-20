@@ -17,7 +17,7 @@ diem/
   core.go          3.1 Main — one method per input
   ledger.go        3.2 Ledger — speculative execution over a branching state
   blocktree.go     3.3 Block-tree — pending blocks, vote buckets, QC formation
-  safety.go        3.4 Safety — the voting rules and the only key holder
+  safety.go        3.4 Safety — the voting rules and their two counters
   pacemaker.go     3.5 Pacemaker — round advance, timeouts, TC formation
   leader.go        3.7 LeaderElection — round-robin, two rounds per leader
   verify.go        everything checked before a message reaches the core
