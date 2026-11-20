@@ -141,8 +141,8 @@ func (o *options) writeKeys() error {
 // runLocal runs a whole cluster in one process, over mutual TLS.
 // diemnet.LocalServers pre-allocates the loopback listeners and numbers the
 // servers 1..n, which is what makes this possible at all: WithPeers needs every
-// address before any server exists. The replicas share one verifier, which
-// needs only the public keys, and so one reject counter.
+// address before any server exists. Each replica verifies with its own
+// Verifier over the public keys, and they share one reject counter.
 func (o *options) runLocal(n int) error {
 	target, err := o.faultTarget(n)
 	if err != nil {
