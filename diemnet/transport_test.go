@@ -14,6 +14,7 @@ import (
 	"github.com/DanyGoT/diembft/diemcrypto"
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"github.com/relab/gorums"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -106,14 +107,15 @@ func waitForPeers(t *testing.T, peers []*peer) {
 }
 
 // group builds n Gorums-local replicas wired into one peer group, over the TLS
-// configurations in tlsByID if set, and starts each with start, registering
-// cleanup to stop everything in the right order.
+// configurations in tlsByID if set and with dial added to every replica's dial
+// options, and starts each with start, registering cleanup to stop everything
+// in the right order.
 // GORUMS: peer addresses must all be known before any server is constructed,
 // so this binds n real loopback listeners via NewLocalServers rather than
 // letting each transport pick its own port.
-func group(t *testing.T, n int, tlsByID map[uint32]*tls.Config, start func(*peer)) []*peer {
+func group(t *testing.T, n int, tlsByID map[uint32]*tls.Config, start func(*peer), dial ...gorums.DialOption) []*peer {
 	t.Helper()
-	srvs, rejected, stop := localServers(t, n, signer(t, 1, n), tlsByID)
+	srvs, rejected, stop := localServers(t, n, signer(t, 1, n), tlsByID, dial...)
 	t.Cleanup(stop)
 
 	peers := make([]*peer, n)
@@ -142,10 +144,10 @@ func group(t *testing.T, n int, tlsByID map[uint32]*tls.Config, start func(*peer
 
 // localServers is n Gorums local servers sharing one VerifyInterceptor over
 // c's keys, with the counter it rejects into.
-func localServers(t *testing.T, n int, c diem.Crypto, tlsByID map[uint32]*tls.Config) ([]*gorums.Server, *atomic.Uint64, func()) {
+func localServers(t *testing.T, n int, c diem.Crypto, tlsByID map[uint32]*tls.Config, dial ...gorums.DialOption) ([]*gorums.Server, *atomic.Uint64, func()) {
 	t.Helper()
 	rejected := new(atomic.Uint64)
-	srvs, stop, err := LocalServers(n, diem.NewVerifier(c, diem.QuorumSize(n)), rejected, tlsByID, nil)
+	srvs, stop, err := LocalServers(n, diem.NewVerifier(c, diem.QuorumSize(n)), rejected, tlsByID, nil, dial...)
 	if err != nil {
 		t.Fatalf("LocalServers: %v", err)
 	}
@@ -352,6 +354,79 @@ func TestVoteToUnknownReplicaIsDropped(t *testing.T) {
 	if !waitFor(recvTimeout, func() bool { return peers[0].tr.Counters().OutboundDropped > before }) {
 		t.Errorf("OutboundDropped = %d, want > %d", peers[0].tr.Counters().OutboundDropped, before)
 	}
+}
+
+// TestDropsAreCountedPerPeer stalls every stream to one peer behind a one-slot
+// send queue. One vote to it blocks in the stalled send and a second fills the
+// slot, so one proposal to every replica is then a drop to that peer and to no
+// other.
+func TestDropsAreCountedPerPeer(t *testing.T) {
+	const n, stalled = 4, 3
+	var target atomic.Pointer[string]
+	sending := make(chan struct{}, 1)
+	peers := group(t, n, nil, record, gorums.WithDialBufferSizes(0, 1), stallStreamsTo(&target, sending))
+	waitForPeers(t, peers)
+	tr := peers[0].tr
+	addr := tr.peers.Node(stalled).Address()
+	target.Store(&addr)
+
+	proposal, vote, _ := round1(t, 1, n)
+	tr.Vote(vote, stalled)
+	select {
+	case <-sending:
+	case <-time.After(recvTimeout):
+		t.Fatal("the vote to the stalled peer never reached its send")
+	}
+	tr.Vote(vote, stalled)
+
+	before := tr.Counters()
+	tr.Proposal(proposal)
+	after := tr.Counters()
+	if got := after.OutboundDropped - before.OutboundDropped; got != 1 {
+		t.Errorf("OutboundDropped grew by %d, want 1", got)
+	}
+	for id := uint32(1); id <= n; id++ {
+		want := uint64(0)
+		if id == stalled {
+			want = 1
+		}
+		if got := after.DroppedTo[id] - before.DroppedTo[id]; got != want {
+			t.Errorf("peer %d: Dropped grew by %d, want %d", id, got, want)
+		}
+	}
+}
+
+// stallStreamsTo makes every stream to the address in target stop sending, as
+// it does when the peer stops reading, until the stream closes. Each send that
+// stalls signals on sending, if it has room.
+func stallStreamsTo(target *atomic.Pointer[string], sending chan<- struct{}) gorums.DialOption {
+	return gorums.WithGRPCDialOptions(grpc.WithStreamInterceptor(
+		func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			cs, err := streamer(ctx, desc, cc, method, opts...)
+			if err != nil {
+				return nil, err
+			}
+			return stalledTo{cs, cc.Target(), target, sending}, nil
+		}))
+}
+
+type stalledTo struct {
+	grpc.ClientStream
+	addr    string
+	target  *atomic.Pointer[string]
+	sending chan<- struct{}
+}
+
+func (s stalledTo) SendMsg(m any) error {
+	if t := s.target.Load(); t == nil || *t != s.addr {
+		return s.ClientStream.SendMsg(m)
+	}
+	select {
+	case s.sending <- struct{}{}:
+	default:
+	}
+	<-s.Context().Done()
+	return s.Context().Err()
 }
 
 // TestForgedNeverReachesTheHandler sends a forged proposal and then the real

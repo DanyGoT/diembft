@@ -152,6 +152,7 @@ type Transport struct {
 	wg     sync.WaitGroup
 
 	dropped atomic.Uint64
+	drops   map[uint32]*atomic.Uint64 // per peer; fixed in New, so read without a lock
 }
 
 var _ diem.Transport = (*Transport)(nil)
@@ -177,16 +178,22 @@ func New(cfg Config) *Transport {
 			serve,
 		}, cfg.ServerOptions...)...)
 	}
+	peers := srv.PeerConfig()
+	drops := make(map[uint32]*atomic.Uint64, peers.Size())
+	for _, id := range peers.NodeIDs() {
+		drops[id] = new(atomic.Uint64)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Transport{
 		srv:      srv,
-		peers:    srv.PeerConfig(),
-		client:   diempb.NewDiemClient(srv.PeerConfig()),
+		peers:    peers,
+		client:   diempb.NewDiemClient(peers),
 		handler:  &handler{},
 		ver:      cfg.Verifier,
 		rejected: cfg.Rejected,
 		ctx:      ctx,
 		cancel:   cancel,
+		drops:    drops,
 	}
 }
 
@@ -223,30 +230,41 @@ func (t *Transport) WaitForPeers(ctx context.Context) error {
 }
 
 func (t *Transport) Proposal(p *diempb.ProposalMsg) {
-	t.count(t.client.Proposal(t.ctx, p).Send())
+	t.count(t.client.Proposal(t.ctx, p).Send(), 0)
 }
 
 // Vote unicasts to the leader of the next round, as the paper does: that leader
 // is the only replica that will propose over the certificate these votes form.
 func (t *Transport) Vote(v *diempb.VoteMsg, to uint32) {
-	t.count(diempb.NewDiemNodeClient(t.peers.Node(to)).Vote(t.ctx, v).Send())
+	t.count(diempb.NewDiemNodeClient(t.peers.Node(to)).Vote(t.ctx, v).Send(), to)
 }
 
 func (t *Transport) Timeout(m *diempb.TimeoutMsg) {
-	t.count(t.client.Timeout(t.ctx, m).Send())
+	t.count(t.client.Timeout(t.ctx, m).Send(), 0)
 }
 
 // count adds one drop per node a send did not reach: a full send queue, an
-// unknown node or an empty configuration.
-func (t *Transport) count(err error) {
+// unknown node or an empty configuration. A multicast's error names its
+// nodes, and a unicast's does not, so to is the unicast's target, or 0.
+func (t *Transport) count(err error, to uint32) {
 	if err == nil || t.ctx.Err() != nil {
 		return
 	}
 	if qcErr, ok := errors.AsType[gorums.QuorumCallError](err); ok {
-		t.dropped.Add(uint64(qcErr.NumErrors()))
+		for id, _ := range qcErr.NodeErrors() {
+			t.drop(id)
+		}
 		return
 	}
+	t.drop(to)
+}
+
+// drop counts one drop to id, in the total only if id is no peer.
+func (t *Transport) drop(id uint32) {
 	t.dropped.Add(1)
+	if d := t.drops[id]; d != nil {
+		d.Add(1)
+	}
 }
 
 // RequestBlock runs a quorum call to every peer on its own goroutine, so a slow
@@ -277,11 +295,17 @@ func (t *Transport) fetch(id []byte) {
 type Counters struct {
 	OutboundDropped uint64
 	Rejected        uint64
+	DroppedTo       map[uint32]uint64 // OutboundDropped by peer ID, this replica's own included
 }
 
 func (t *Transport) Counters() Counters {
+	to := make(map[uint32]uint64, len(t.drops))
+	for id, d := range t.drops {
+		to[id] = d.Load()
+	}
 	return Counters{
 		OutboundDropped: t.dropped.Load(),
 		Rejected:        t.rejected.Load(),
+		DroppedTo:       to,
 	}
 }
