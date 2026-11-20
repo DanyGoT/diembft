@@ -90,7 +90,7 @@ rounds in every rotation, its own two and the one before, whose votes go to it.
 | well-formedness | round-r proposal/timeout carries TC(r-1) iff qc.round != r-1, else no TC | =proto/diempb/methods.go:wellFormed=, =core.go:justifyingTC=, =verify.go:VerifyProposal=, =VerifyTimeout= |
 | block id binding | id = hash(author, round, payload, qc) recomputed on receipt | =verify.go:VerifyProposal= |
 | block extends lower round | block.qc.round < block.round; edge check ahead of safe_to_vote | =verify.go:VerifyProposal=, =safety.go:safeToVote= |
-| QC validity | at least a quorum of distinct signers in canonical order, every signature valid, over the LedgerCommitInfo, which binds the VoteInfo hash; author signature; a commit only over a 2-chain | =verify.go:VerifyQC=, =verifyCert= |
+| QC validity | at least a quorum of distinct signers in canonical order, every signature valid, over the LedgerCommitInfo, which binds the VoteInfo hash; author signature; a commit only over a 2-chain | =verify.go:VerifyQC=, =canonicalSigners= |
 | TC validity | quorum of distinct signers, each over (round, own high_qc_round) | =verify.go:VerifyTC= |
 | edge verifies | QC, TC, block id and author signature checked at the edge only; Safety's inputs come from the edge or are built from votes and timeouts it checked (paper: Safety re-checks in valid_signatures) | =verify.go:Verifier=, =safety.go:Safety= |
 | one vote per signer/round | duplicate votes cannot reach a quorum | =blocktree.go:ProcessVote= |

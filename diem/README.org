@@ -92,7 +92,8 @@ supplies a leader's payload, =Transport= (=diemnet= and the sim's in-memory
 network) is the hand-off out of the core, =Crypto= (=diemcrypto= and
 =testSigner=) signs and verifies digests as plain bytes, with the signer id as an
 argument — it knows nothing of the message types, and checking a certificate is
-=verify.go:verifyCert= in =diem=, and =Clock= (=SystemClock= and =fakeClock=)
+=verify.go:VerifyQC= and =VerifyTC= in =diem=, which hand its signatures to
+=VerifyAll= as one batch — and =Clock= (=SystemClock= and =fakeClock=)
 arms the round timer.
 
 The ledger, the block tree and the round timer are concrete

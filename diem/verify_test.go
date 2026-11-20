@@ -106,12 +106,53 @@ func TestVerifyProposalRejectsCertificateAtOrAboveItsOwnRound(t *testing.T) {
 // countingSigner is a testSigner that counts Verify calls.
 type countingSigner struct {
 	*testSigner
-	verifies int
+	verifies, batches int
 }
 
 func (s *countingSigner) Verify(signer uint32, digest, sig []byte) bool {
 	s.verifies++
 	return s.testSigner.Verify(signer, digest, sig)
+}
+
+// VerifyAll counts every check: the embedded one would bypass Verify above.
+func (s *countingSigner) VerifyAll(signers []uint32, digests, sigs [][]byte) bool {
+	s.batches++
+	return verifyEach(s.Verify, signers, digests, sigs)
+}
+
+// TestVerifyChecksACertificateInOneBatch: a certificate's signatures go to
+// Crypto in one call, so it can check them side by side, and a malformed one
+// costs no signature check at all.
+func TestVerifyChecksACertificateInOneBatch(t *testing.T) {
+	vi := voteInfo(hashOf(2), 2, genesisBlock.GetId(), 1)
+	outOfOrderTC := makeTC(3, 1, 1, 1)
+	votes := outOfOrderTC.GetVotes()
+	votes[1], votes[2] = votes[2], votes[1]
+
+	for _, tt := range []struct {
+		name              string
+		verify            func(*Verifier) bool
+		valid             bool
+		verifies, batches int
+	}{
+		{"QC", func(v *Verifier) bool { return v.VerifyQC(makeQC(vi, nil, 1, 2, 3)) }, true, testQuorum + 1, 1},
+		{"TC", func(v *Verifier) bool { return v.VerifyTC(makeTC(3, 1, 1, 1)) }, true, testQuorum, 1},
+		{"QC out of signer order", func(v *Verifier) bool { return v.VerifyQC(makeQC(vi, nil, 1, 3, 2)) }, false, 0, 0},
+		{"QC below a quorum", func(v *Verifier) bool { return v.VerifyQC(makeQC(vi, nil, 1, 2)) }, false, 0, 0},
+		{"TC out of signer order", func(v *Verifier) bool { return v.VerifyTC(outOfOrderTC) }, false, 0, 0},
+		{"TC below a quorum", func(v *Verifier) bool { return v.VerifyTC(makeTC(3, 1, 1)) }, false, 0, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			crypto := &countingSigner{testSigner: newTestSigner(testN)}
+			if got := tt.verify(NewVerifier(crypto, testQuorum)); got != tt.valid {
+				t.Fatalf("verification = %v, want %v", got, tt.valid)
+			}
+			if crypto.verifies != tt.verifies || crypto.batches != tt.batches {
+				t.Errorf("made %d signature checks in %d batches, want %d in %d",
+					crypto.verifies, crypto.batches, tt.verifies, tt.batches)
+			}
+		})
+	}
 }
 
 // TestVerifyChecksSharedCommitQCOnce: when the last QC committed, it is both

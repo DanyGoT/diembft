@@ -22,6 +22,20 @@ func (s *testSigner) Verify(signer uint32, digest, sig []byte) bool {
 	return bytes.Equal(sig, digest)
 }
 
+func (s *testSigner) VerifyAll(signers []uint32, digests, sigs [][]byte) bool {
+	return verifyEach(s.Verify, signers, digests, sigs)
+}
+
+// verifyEach is Crypto.VerifyAll one check at a time, through verify.
+func verifyEach(verify func(uint32, []byte, []byte) bool, signers []uint32, digests, sigs [][]byte) bool {
+	for i, id := range signers {
+		if !verify(id, digests[i], sigs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // fifoPool is a MemPool handing out at most batch queued transactions per
 // proposal, oldest first.
 type fifoPool struct {

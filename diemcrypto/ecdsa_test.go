@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"encoding/asn1"
 	"math/big"
+	"slices"
 	"testing"
 )
 
@@ -129,6 +130,42 @@ func TestVerify(t *testing.T) {
 	for _, tt := range tests {
 		if got := signers[1].Verify(tt.signer, tt.msg, tt.sig); got != tt.want {
 			t.Errorf("%s: Verify() = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestVerifyAll: one bad check anywhere in a batch fails it, whether it is
+// the one checked inline or one checked on its own goroutine.
+func TestVerifyAll(t *testing.T) {
+	const n = 4
+	signers := newSigners(t, n)
+	ids := []uint32{1, 2, 3, 4}
+	digests := make([][]byte, n)
+	sigs := make([][]byte, n)
+	for i, id := range ids {
+		digests[i] = fixedHash(byte(i))
+		sig, err := signers[id].Sign(digests[i])
+		if err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+		sigs[i] = sig
+	}
+	if !signers[1].VerifyAll(ids, digests, sigs) {
+		t.Fatal("VerifyAll = false for a valid batch, want true")
+	}
+	if !signers[1].VerifyAll(nil, nil, nil) {
+		t.Error("VerifyAll = false for an empty batch, want true")
+	}
+	for bad := range n {
+		wrong := slices.Clone(digests)
+		wrong[bad] = fixedHash(0xFF)
+		if signers[1].VerifyAll(ids, wrong, sigs) {
+			t.Errorf("VerifyAll = true with a bad signature at %d, want false", bad)
+		}
+		unknown := slices.Clone(ids)
+		unknown[bad] = n + 1
+		if signers[1].VerifyAll(unknown, digests, sigs) {
+			t.Errorf("VerifyAll = true with an unknown signer at %d, want false", bad)
 		}
 	}
 }

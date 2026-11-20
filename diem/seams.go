@@ -29,6 +29,10 @@ type Crypto interface {
 	Sign(digest []byte) ([]byte, error)
 	// Verify checks sig against the public key registered for signer.
 	Verify(signer uint32, digest, sig []byte) bool
+	// VerifyAll reports whether sigs[i] is a valid signature over digests[i]
+	// by signers[i] for every i. It may check them side by side, which is why
+	// it sits behind Crypto: this package starts no goroutines.
+	VerifyAll(signers []uint32, digests, sigs [][]byte) bool
 }
 
 // MemPool is the paper's MemPool module (3.6). GetTransactions runs under

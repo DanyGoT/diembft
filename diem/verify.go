@@ -117,10 +117,14 @@ func (v *Verifier) VerifyQC(qc *diempb.QuorumCert) bool {
 	if vi := qc.GetVoteInfo(); qc.GetLedgerCommitInfo().Commits() && !consecutive(vi.GetRound(), vi.GetParentRound()) {
 		return false
 	}
-	if qc.GetAuthorSig().GetSigner() != qc.GetAuthor() {
+	commitDigest, sigsDigest := qc.GetLedgerCommitInfo().Digest(), qc.SigsDigest()
+	var b batch
+	for _, sig := range qc.GetSignatures() {
+		b.add(commitDigest, sig)
+	}
+	if !v.canonicalSigners(b.signers) || qc.GetAuthorSig().GetSigner() != qc.GetAuthor() {
 		return false
 	}
-	commitDigest, sigsDigest := qc.GetLedgerCommitInfo().Digest(), qc.SigsDigest()
 	key := keyOf(commitDigest, sigsDigest, qc)
 	if v.seen(key) {
 		return true
@@ -131,27 +135,43 @@ func (v *Verifier) VerifyQC(qc *diempb.QuorumCert) bool {
 	// which is what makes an aggregator that hands out two quorums over one vote
 	// attributable — the block id covers the set, so the two are different
 	// blocks.
-	if !v.verifyCert(commitDigest, qc.GetSignatures()) || !verifySig(v.crypto, sigsDigest, qc.GetAuthorSig()) {
+	b.add(sigsDigest, qc.GetAuthorSig())
+	if !b.verify(v.crypto) {
 		return false
 	}
 	v.remember(key)
 	return true
 }
 
-// verifyCert checks a certificate carries at least a quorum of signers in
-// strictly increasing ID order, so no duplicates and one wire form per signer
-// set, and that every signature in it verifies, so it carries no bytes nobody
-// checked. The form matters beyond tidiness here: a block id covers its parent
-// certificate's signature slice byte for byte (blockID), so a set left
+// canonicalSigners reports whether a certificate's signers are at least a
+// quorum in strictly increasing ID order, so no duplicates and one wire form
+// per signer set. Every signature in the set is then verified, so it carries
+// no bytes nobody checked. The form matters beyond tidiness here: a block id covers its
+// parent certificate's signature slice byte for byte (blockID), so a set left
 // unordered or padded with junk is one quorum's worth of distinct block ids.
-func (v *Verifier) verifyCert(digest []byte, sigs []*diempb.Signature) bool {
-	for i, sig := range sigs {
-		if i > 0 && sigs[i-1].GetSigner() >= sig.GetSigner() || !verifySig(v.crypto, digest, sig) {
+func (v *Verifier) canonicalSigners(signers []uint32) bool {
+	for i := 1; i < len(signers); i++ {
+		if signers[i-1] >= signers[i] {
 			return false
 		}
 	}
-	return len(sigs) >= v.quorum
+	return len(signers) >= v.quorum
 }
+
+// batch collects a certificate's signatures for one Crypto.VerifyAll call,
+// which checks them side by side.
+type batch struct {
+	signers       []uint32
+	digests, sigs [][]byte
+}
+
+func (b *batch) add(digest []byte, sig *diempb.Signature) {
+	b.signers = append(b.signers, sig.GetSigner())
+	b.digests = append(b.digests, digest)
+	b.sigs = append(b.sigs, sig.GetSig())
+}
+
+func (b *batch) verify(c Crypto) bool { return c.VerifyAll(b.signers, b.digests, b.sigs) }
 
 // VerifyTC reports whether tc carries a quorum of signers in canonical order,
 // each having signed tc's round paired with its own reported high_qc round. A
@@ -165,16 +185,11 @@ func (v *Verifier) VerifyTC(tc *diempb.TimeoutCert) bool {
 	if tc.GetRound() == 0 {
 		return false
 	}
-	votes := tc.GetVotes()
-	for i, vote := range votes {
-		if i > 0 && votes[i-1].GetSig().GetSigner() >= vote.GetSig().GetSigner() {
-			return false
-		}
-		if !verifySig(v.crypto, diempb.TimeoutDigest(tc.GetRound(), vote.GetHighQcRound()), vote.GetSig()) {
-			return false
-		}
+	var b batch
+	for _, vote := range tc.GetVotes() {
+		b.add(diempb.TimeoutDigest(tc.GetRound(), vote.GetHighQcRound()), vote.GetSig())
 	}
-	return len(votes) >= v.quorum
+	return v.canonicalSigners(b.signers) && b.verify(v.crypto)
 }
 
 // VerifyProposal reports whether p is well formed and validly signed by its
