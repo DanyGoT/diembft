@@ -5,6 +5,8 @@ import (
 	"cmp"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 
 	"github.com/DanyGoT/diembft/diemnet"
 	"github.com/DanyGoT/diembft/proto/diempb"
@@ -31,12 +33,18 @@ func summarize(r *replica.Replica) summary {
 	}
 }
 
-// report prints each replica's committed depth and checks the logs agree over
-// their common prefix, which is the whole point of running the thing.
+// report prints each replica's committed depth and the peers it dropped
+// messages to, and checks the logs agree over their common prefix, which is
+// the whole point of running the thing.
 func report(w io.Writer, sums []summary) error {
 	for _, s := range sums {
 		_, _ = fmt.Fprintf(w, "replica %d: committed %d (%d commands), dropped %d, declined for a missing ancestor %d, rejected %d\n",
 			s.id, len(s.log), s.commands, s.counters.OutboundDropped, s.declined, s.counters.Rejected)
+		for _, id := range slices.Sorted(maps.Keys(s.counters.DroppedTo)) {
+			if n := s.counters.DroppedTo[id]; n > 0 {
+				_, _ = fmt.Fprintf(w, "  to peer %d: dropped %d\n", id, n)
+			}
+		}
 	}
 	for i, a := range sums {
 		for _, b := range sums[i+1:] {
