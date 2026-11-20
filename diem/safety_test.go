@@ -55,6 +55,11 @@ func makeTC(round uint64, highQCRounds ...uint64) *diempb.TimeoutCert {
 // makeQC builds a QC over vi whose LedgerCommitInfo is correctly bound to it,
 // signed by signerIDs and assembled by the first of them.
 func makeQC(vi *diempb.VoteInfo, commitStateID []byte, signerIDs ...uint32) *diempb.QuorumCert {
+	return makeQCWith(signAs, vi, commitStateID, signerIDs...)
+}
+
+// makeQCWith is makeQC signing through signAs.
+func makeQCWith(signAs func(uint32, []byte) *diempb.Signature, vi *diempb.VoteInfo, commitStateID []byte, signerIDs ...uint32) *diempb.QuorumCert {
 	commit := commitInfo(commitStateID, vi)
 	digest := commit.Digest()
 	sigs := make([]*diempb.Signature, len(signerIDs))

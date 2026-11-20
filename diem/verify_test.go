@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/DanyGoT/diembft/diemcrypto"
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"google.golang.org/protobuf/proto"
 )
@@ -150,6 +151,83 @@ func TestVerifyChecksSharedCommitQCOnce(t *testing.T) {
 				t.Errorf("made %d signature checks, want %d", crypto.verifies, want)
 			}
 		})
+	}
+}
+
+// TestVerifyQCChecksSignaturesOnce: one QC comes back in many later messages,
+// and its signatures are the expensive part of checking it.
+func TestVerifyQCChecksSignaturesOnce(t *testing.T) {
+	qc := makeQC(voteInfo(hashOf(2), 2, genesisBlock.GetId(), 1), hashOf(9), 1, 2, 3)
+	crypto := &countingSigner{testSigner: newTestSigner(testN)}
+	v := NewVerifier(crypto, testQuorum)
+	if !v.VerifyQC(qc) || !v.VerifyQC(proto.Clone(qc).(*diempb.QuorumCert)) {
+		t.Fatal("VerifyQC = false for a valid QC, want true")
+	}
+	// The quorum and the author signature, once.
+	if want := testQuorum + 1; crypto.verifies != want {
+		t.Errorf("made %d signature checks for one QC seen twice, want %d", crypto.verifies, want)
+	}
+}
+
+// TestVerifyQCRemembersOnlyWhatItChecked: a QC that differs from a verified
+// one in anything its checks read is checked afresh. It signs with real keys,
+// because a testSigner signature does not bind its signer.
+func TestVerifyQCRemembersOnlyWhatItChecked(t *testing.T) {
+	privs, pubs, err := diemcrypto.SeededKeys(testN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signWith := func(id uint32, digest []byte) *diempb.Signature {
+		sig, err := sign(diemcrypto.New(privs[id], pubs), id, digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sig
+	}
+	qc := makeQCWith(signWith, voteInfo(hashOf(2), 2, genesisBlock.GetId(), 1), hashOf(9), 1, 2, 3)
+	v := NewVerifier(diemcrypto.New(nil, pubs), testQuorum)
+	if !v.VerifyQC(qc) {
+		t.Fatal("VerifyQC = false for a valid QC, want true")
+	}
+
+	for name, change := range map[string]func(*diempb.QuorumCert){
+		"a quorum signature": func(q *diempb.QuorumCert) {
+			q.GetSignatures()[1].SetSig(q.GetSignatures()[0].GetSig())
+		},
+		"the commit info": func(q *diempb.QuorumCert) { q.GetLedgerCommitInfo().SetCommitStateId(hashOf(8)) },
+		"the vote info":   func(q *diempb.QuorumCert) { q.GetVoteInfo().SetExecStateId(hashOf(7)) },
+		"the author": func(q *diempb.QuorumCert) {
+			q.SetAuthor(2)
+			q.GetAuthorSig().SetSigner(2)
+		},
+		"the author signature": func(q *diempb.QuorumCert) {
+			q.GetAuthorSig().SetSig(signWith(2, q.SigsDigest()).GetSig())
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := proto.Clone(qc).(*diempb.QuorumCert)
+			change(q)
+			if v.VerifyQC(q) {
+				t.Error("VerifyQC = true for a QC changed after it was verified, want false")
+			}
+		})
+	}
+}
+
+// TestVerifyQCForgetsOldQCs: what the Verifier remembers is bounded.
+func TestVerifyQCForgetsOldQCs(t *testing.T) {
+	crypto := &countingSigner{testSigner: newTestSigner(testN)}
+	v := NewVerifier(crypto, testQuorum)
+	qcFor := func(i int) *diempb.QuorumCert {
+		return makeQC(voteInfo(hashOf(byte(i), byte(i>>8)), 2, genesisBlock.GetId(), 1), nil, 1, 2, 3)
+	}
+	for i := range 2*verifiedCap + 1 {
+		v.VerifyQC(qcFor(i))
+	}
+	crypto.verifies = 0
+	v.VerifyQC(qcFor(0))
+	if crypto.verifies == 0 {
+		t.Errorf("the first of %d QCs is still remembered, want it forgotten", 2*verifiedCap+1)
 	}
 }
 

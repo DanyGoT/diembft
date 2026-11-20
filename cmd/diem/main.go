@@ -163,8 +163,7 @@ func (o *options) runLocal(n int) error {
 		}
 	}
 	rejected := new(atomic.Uint64)
-	verifier := diem.NewVerifier(diemcrypto.New(nil, pubs), diem.QuorumSize(n))
-	srvs, stop, err := diemnet.LocalServers(n, verifier, rejected, tlsByID, o.serverOptions(), o.dialOptions()...)
+	srvs, stop, err := diemnet.LocalServers(n, diemcrypto.New(nil, pubs), rejected, tlsByID, o.serverOptions(), o.dialOptions()...)
 	if err != nil {
 		return err
 	}
