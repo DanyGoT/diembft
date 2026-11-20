@@ -404,7 +404,7 @@ func TestDuplicateTimeoutDoesNotRetrigger(t *testing.T) {
 	ledger := NewMemLedger()
 	signer := newTestSigner(n)
 	tree := NewBlockTree(1, quorum, ledger, signer)
-	safety := NewSafety(1, NewVerifier(signer, quorum), signer, ledger, tree)
+	safety := NewSafety(1, signer, ledger, tree)
 	net := &dupNet{}
 	pm := NewPacemaker(quorum, faulty, newFakeClock(),
 		simTimer, new(sync.Mutex), net, safety, tree)
@@ -412,7 +412,7 @@ func TestDuplicateTimeoutDoesNotRetrigger(t *testing.T) {
 
 	timeout := func(from uint32) *diempb.TimeoutMsg {
 		t.Helper()
-		s := NewSafety(from, NewVerifier(newTestSigner(n), quorum), newTestSigner(n), NewMemLedger(), tree)
+		s := NewSafety(from, newTestSigner(n), NewMemLedger(), tree)
 		info := s.MakeTimeout(1, genesisQC, nil)
 		if info == nil {
 			t.Fatalf("replica %d refused to time out round 1", from)

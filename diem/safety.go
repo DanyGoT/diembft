@@ -2,16 +2,21 @@ package diem
 
 import "github.com/DanyGoT/diembft/proto/diempb"
 
-// Safety is the paper's Safety module (3.4): the core consensus safety rules
-// and the only holder of the private key.
+// Safety is the paper's Safety module (3.4): the core consensus safety rules.
 //
-// It keeps exactly two counters — the last round voted in and the highest
-// certified round it has endorsed — which is what allows the whole module to
-// be deployed inside a trusted hardware component. Everything else it needs
-// arrives as an argument or comes from the ledger.
+// It keeps exactly two counters, the last round voted in and the highest
+// certified round it has endorsed. Everything else it needs arrives as an
+// argument or comes from the ledger.
+//
+// DiemBFT 3.4 has Safety hold the private key alone and re-check every
+// certificate it signs over (valid_signatures in make_vote and make_timeout),
+// so it can run in trusted hardware and outlast a compromise of the rest of
+// the replica. Here it shares the process and the key with the rest, so a
+// compromised process is Byzantine and a re-check would protect nothing. Safety
+// trusts the edge Verifier instead: its callers pass only certificates the edge
+// checked, or ones the replica built from votes and timeouts the edge checked.
 type Safety struct {
 	id     uint32
-	verify *Verifier
 	crypto Crypto
 	ledger *MemLedger
 	tree   *BlockTree
@@ -22,10 +27,9 @@ type Safety struct {
 	declinedMissingAncestor uint64
 }
 
-// NewSafety returns the safety module for replica id. It re-verifies through
-// verify rather than trusting what the edge already checked.
-func NewSafety(id uint32, verify *Verifier, crypto Crypto, ledger *MemLedger, tree *BlockTree) *Safety {
-	return &Safety{id: id, verify: verify, crypto: crypto, ledger: ledger, tree: tree}
+// NewSafety returns the safety module for replica id.
+func NewSafety(id uint32, crypto Crypto, ledger *MemLedger, tree *BlockTree) *Safety {
+	return &Safety{id: id, crypto: crypto, ledger: ledger, tree: tree}
 }
 
 // DeclinedMissingAncestor counts the votes withheld because the block's
@@ -101,14 +105,11 @@ func (s *Safety) commitStateIDCandidate(blockRound uint64, qc *diempb.QuorumCert
 }
 
 // MakeVote returns this replica's vote for b, or nil if the safety rules
-// refuse it. The counters move only on the path that produces a vote.
+// refuse it. The counters move only on the path that produces a vote. b and
+// lastTC must come from a proposal the edge verified.
 func (s *Safety) MakeVote(b *diempb.Block, lastTC *diempb.TimeoutCert) *diempb.VoteMsg {
 	qcRound := b.GetQc().Round()
-	// Re-deriving the id makes the vote name the block whose QC the safety rules
-	// just checked. DiemBFT 3.4 valid_signatures also re-checks the author's
-	// signature; that lives on the proposal message, which never reaches
-	// Safety, so it stays with the edge.
-	if !b.ValidID() || !s.validSignatures(b.GetQc(), lastTC) || !s.safeToVote(b.GetRound(), qcRound, lastTC) {
+	if !s.safeToVote(b.GetRound(), qcRound, lastTC) {
 		return nil
 	}
 	// The paper puts this lookup inside the vote and would sign a bottom
@@ -151,10 +152,12 @@ func (s *Safety) MakeVote(b *diempb.Block, lastTC *diempb.TimeoutCert) *diempb.V
 
 // MakeTimeout returns this replica's timeout for round, or nil if the safety
 // rules refuse it. Timing out burns the round for voting too: the counter is
-// raised before the message goes out.
+// raised before the message goes out. highQC and lastTC must be ones the edge
+// verified, or ones this replica built from votes and timeouts the edge
+// verified.
 func (s *Safety) MakeTimeout(round uint64, highQC *diempb.QuorumCert, lastTC *diempb.TimeoutCert) *diempb.TimeoutInfo {
 	qcRound := highQC.Round()
-	if !s.validSignatures(highQC, lastTC) || !s.safeToTimeout(round, qcRound, lastTC) {
+	if !s.safeToTimeout(round, qcRound, lastTC) {
 		return nil
 	}
 	s.increaseHighestVoteRound(round)
@@ -163,11 +166,4 @@ func (s *Safety) MakeTimeout(round uint64, highQC *diempb.QuorumCert, lastTC *di
 		return nil
 	}
 	return diempb.TimeoutInfo_builder{Round: round, HighQc: highQC, Sender: s.id, Sig: sig}.Build()
-}
-
-// validSignatures re-checks everything a vote will be built over. The rest of
-// the replica has checked it already; Safety checks again because it is the
-// one component assumed to survive the rest being compromised.
-func (s *Safety) validSignatures(qc *diempb.QuorumCert, tc *diempb.TimeoutCert) bool {
-	return s.verify.VerifyQC(qc) && s.verify.VerifyTC(tc)
 }

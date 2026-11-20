@@ -27,7 +27,7 @@ func newSafetyFixture(id uint32) *safetyFixture {
 	crypto := newTestSigner(testN)
 	tree := NewBlockTree(id, testQuorum, ledger, crypto)
 	return &safetyFixture{
-		safety: NewSafety(id, NewVerifier(crypto, testQuorum), crypto, ledger, tree),
+		safety: NewSafety(id, crypto, ledger, tree),
 		ledger: ledger,
 		crypto: crypto,
 	}
@@ -215,16 +215,6 @@ func TestMakeVote(t *testing.T) {
 		f := newSafetyFixture(1)
 		b := NewBlock(1, 1, nil, GenesisQC())
 		// b is never passed to Speculate, so PendingState(b.GetId()) is false.
-		if v := f.safety.MakeVote(b, nil); v != nil {
-			t.Errorf("MakeVote = %+v, want nil", v)
-		}
-	})
-
-	t.Run("nil when the block id does not match its fields", func(t *testing.T) {
-		f := newSafetyFixture(1)
-		b := NewBlock(1, 1, nil, GenesisQC())
-		b.SetPayload([][]byte{[]byte("x")}) // the id still hashes an empty payload
-		f.ledger.Speculate(b)
 		if v := f.safety.MakeVote(b, nil); v != nil {
 			t.Errorf("MakeVote = %+v, want nil", v)
 		}

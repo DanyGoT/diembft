@@ -128,7 +128,7 @@ func voteFor(t *testing.T, from uint32, b *diempb.Block) *diempb.VoteMsg {
 	ledger.Speculate(b)
 	signer := newTestSigner(testN)
 	tree := NewBlockTree(from, testQuorum, ledger, signer)
-	v := NewSafety(from, NewVerifier(signer, testQuorum), signer, ledger, tree).MakeVote(b, nil)
+	v := NewSafety(from, signer, ledger, tree).MakeVote(b, nil)
 	if v == nil {
 		t.Fatalf("replica %d refused to vote for round %d", from, b.GetRound())
 	}
@@ -188,7 +188,7 @@ func timeoutFrom(t *testing.T, from uint32) *diempb.TimeoutMsg {
 	ledger := NewMemLedger()
 	signer := newTestSigner(testN)
 	tree := NewBlockTree(from, testQuorum, ledger, signer)
-	info := NewSafety(from, NewVerifier(signer, testQuorum), signer, ledger, tree).MakeTimeout(1, genesisQC, nil)
+	info := NewSafety(from, signer, ledger, tree).MakeTimeout(1, genesisQC, nil)
 	if info == nil {
 		t.Fatalf("replica %d refused to time out round 1", from)
 	}

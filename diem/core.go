@@ -69,7 +69,7 @@ func New(cfg Config) *Core {
 	faulty := Faulty(n)
 
 	tree := NewBlockTree(cfg.ID, quorum, cfg.Ledger, cfg.Crypto)
-	safety := NewSafety(cfg.ID, NewVerifier(cfg.Crypto, quorum), cfg.Crypto, cfg.Ledger, tree)
+	safety := NewSafety(cfg.ID, cfg.Crypto, cfg.Ledger, tree)
 	pacemaker := NewPacemaker(quorum, faulty, cfg.Clock, cfg.RoundTimer, cfg.Lock, cfg.Transport, safety, tree)
 	leaders := NewLeaderElection(cfg.Validators)
 
