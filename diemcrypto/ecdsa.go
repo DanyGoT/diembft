@@ -12,6 +12,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"sync"
+	"sync/atomic"
 )
 
 // ECDSA accepts both (r, s) and (r, N-s) for one signature. Only the low-s
@@ -59,9 +61,44 @@ func (s *Signer) Sign(digest []byte) ([]byte, error) {
 // and rejects a signature not in low-s form.
 func (s *Signer) Verify(signer uint32, digest, sig []byte) bool {
 	pub, ok := s.keys[signer]
-	if !ok {
+	return ok && verify(pub, digest, sig)
+}
+
+// VerifyAll is Verify over every i, checked side by side. An unknown signer
+// fails the batch before any check starts, so a batch costs at most one
+// goroutine per registered key the caller lets through.
+func (s *Signer) VerifyAll(signers []uint32, digests, sigs [][]byte) bool {
+	if len(digests) != len(signers) || len(sigs) != len(signers) {
 		return false
 	}
+	pubs := make([]*ecdsa.PublicKey, len(signers))
+	for i, id := range signers {
+		pub, ok := s.keys[id]
+		if !ok {
+			return false
+		}
+		pubs[i] = pub
+	}
+	if len(pubs) == 0 {
+		return true
+	}
+	var failed atomic.Bool
+	var wg sync.WaitGroup
+	for i := 1; i < len(pubs); i++ {
+		wg.Go(func() {
+			if !verify(pubs[i], digests[i], sigs[i]) {
+				failed.Store(true)
+			}
+		})
+	}
+	ok := verify(pubs[0], digests[0], sigs[0])
+	wg.Wait()
+	return ok && !failed.Load()
+}
+
+// verify checks sig over digest against pub, and rejects a signature not in
+// low-s form.
+func verify(pub *ecdsa.PublicKey, digest, sig []byte) bool {
 	var rs ecdsaSig
 	if _, err := asn1.Unmarshal(sig, &rs); err != nil || rs.S.Cmp(halfOrder) > 0 {
 		return false
