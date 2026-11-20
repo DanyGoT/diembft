@@ -17,7 +17,11 @@ import (
 	"github.com/relab/gorums/benchkit"
 )
 
-const defaultRoundTimeout = 100 * time.Millisecond
+const (
+	defaultRoundTimeout = 100 * time.Millisecond
+	defaultBatch        = 64
+	defaultPoolSize     = 4096
+)
 
 // Config is everything a replica needs.
 type Config struct {
@@ -27,8 +31,17 @@ type Config struct {
 	Key  *ecdsa.PrivateKey
 	Keys map[uint32]*ecdsa.PublicKey
 
-	// MemPool supplies a leader's payload; nil proposes empty blocks.
+	// MemPool, if set, supplies a leader's payload in place of the commands
+	// clients Submit.
 	MemPool diem.MemPool
+
+	// Batch is the most submitted commands per block, and PoolSize the most
+	// submitted and not yet committed. 0 picks a default.
+	Batch, PoolSize int
+
+	// OnCommit, if set, runs for every committed block in commit order. It runs
+	// under the replica's lock, so it must not block or call into the Replica.
+	OnCommit func(*diempb.Block)
 
 	// RoundTimeout is the round timer's α; its β is half of it.
 	RoundTimeout time.Duration
@@ -48,14 +61,15 @@ type Replica struct {
 	// mu serializes every call into the core: inbound messages, fetched
 	// blocks and the round timer. Gorums runs one sender's handlers in order,
 	// and mu serializes them across senders. It also guards commits, commands
-	// and proposed, which the core writes through the ledger and the transport.
+	// and the pool, which the core reaches through the ledger, the transport
+	// and the MemPool.
 	mu       sync.Mutex
 	commits  []*diempb.Block
 	commands uint64
-
-	// proposed is when this replica sent its proposal for each round it led and
-	// has not yet seen committed.
-	proposed map[uint64]time.Time
+	pool     *pool
+	external bool // Config.MemPool replaces the pool
+	stopped  bool // Run has returned
+	onCommit func(*diempb.Block)
 
 	measure benchkit.Options
 	m       *benchkit.Measurement
@@ -67,6 +81,12 @@ type Replica struct {
 func New(cfg Config) *Replica {
 	if cfg.RoundTimeout == 0 {
 		cfg.RoundTimeout = defaultRoundTimeout
+	}
+	if cfg.Batch <= 0 {
+		cfg.Batch = defaultBatch
+	}
+	if cfg.PoolSize <= 0 {
+		cfg.PoolSize = defaultPoolSize
 	}
 	// The key set fixes the quorum and the leader rotation, so a peer list that
 	// disagrees with it would give this replica a different quorum from its
@@ -80,7 +100,18 @@ func New(cfg Config) *Replica {
 
 	validators := slices.Sorted(maps.Keys(cfg.Keys))
 	signer := diemcrypto.New(cfg.Key, cfg.Keys)
-	r := &Replica{id: cfg.ID, proposed: map[uint64]time.Time{}, measure: cfg.Measure, started: make(chan struct{})}
+	r := &Replica{
+		id:       cfg.ID,
+		pool:     &pool{batch: cfg.Batch, size: cfg.PoolSize},
+		external: cfg.MemPool != nil,
+		onCommit: cfg.OnCommit,
+		measure:  cfg.Measure,
+		started:  make(chan struct{}),
+	}
+	var mempool diem.MemPool = r.pool
+	if r.external {
+		mempool = cfg.MemPool
+	}
 	ledger := diem.NewMemLedger()
 	ledger.OnCommit = r.commit
 
@@ -94,41 +125,64 @@ func New(cfg Config) *Replica {
 		Validators: validators,
 		Ledger:     ledger,
 		Crypto:     signer,
-		Transport:  stamper{r.net, r.proposed},
+		Transport:  stamper{r.net, r.pool},
 		Clock:      diem.SystemClock{},
 		RoundTimer: diem.RoundTimer{Alpha: cfg.RoundTimeout, Beta: cfg.RoundTimeout / 2},
 		Lock:       &r.mu,
-		MemPool:    cfg.MemPool,
+		MemPool:    mempool,
 	})
 	return r
 }
 
-// stamper records when this replica sends each of its proposals.
+// stamper tells the pool when this replica sends each of its proposals.
 type stamper struct {
 	*diemnet.Transport
-	proposed map[uint64]time.Time
+	pool *pool
 }
 
 func (s stamper) Proposal(p *diempb.ProposalMsg) {
-	s.proposed[p.GetBlock().GetRound()] = time.Now()
+	s.pool.proposed(p.GetBlock().GetRound(), time.Now())
 	s.Transport.Proposal(p)
 }
 
 // commit appends b to the log and, for a block this replica proposed, records
-// its propose-to-commit latency. Rounds at or below b's can no longer commit
-// a block of this replica's, so their stamps go too. It runs inside a core
-// call, so mu is already held.
+// its propose-to-commit latency and tells its commands' clients. OnCommit runs
+// first, so a client sees its command applied. It runs inside a core call, so
+// mu is already held.
 func (r *Replica) commit(b *diempb.Block) {
-	if t, ok := r.proposed[b.GetRound()]; ok && b.GetAuthor() == r.id {
-		r.m.Stats.AddLatency(time.Since(t))
-		for round := range r.proposed {
-			if round <= b.GetRound() {
-				delete(r.proposed, round)
-			}
-		}
+	own, ok := r.pool.committed(b, r.id)
+	if ok {
+		r.m.Stats.AddLatency(time.Since(own.sent))
 	}
 	r.commits = append(r.commits, b)
 	r.commands += uint64(len(b.GetPayload()))
+	if r.onCommit != nil {
+		r.onCommit(b)
+	}
+	for _, e := range own.entries {
+		close(e.done)
+	}
+}
+
+// Submit offers a copy of cmd for ordering; done closes once it is committed
+// here. It returns false before Started, after Run has returned, when
+// Config.MemPool replaces the pool, or when PoolSize commands are already
+// waiting. A done still open when Run returns never closes.
+func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
+	select {
+	case <-r.started:
+	default:
+		return nil, false // Run holds mu until every peer is connected
+	}
+	if r.external {
+		return nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return nil, false
+	}
+	return r.pool.add(slices.Clone(cmd))
 }
 
 // Run serves the transport, waits for every peer, then runs consensus until
@@ -163,6 +217,7 @@ func (r *Replica) Run(ctx context.Context) error {
 	r.net.Stop()
 	r.mu.Lock()
 	r.core.Stop()
+	r.stopped = true
 	r.result = r.m.Finish()
 	r.mu.Unlock()
 	return ctx.Err()
