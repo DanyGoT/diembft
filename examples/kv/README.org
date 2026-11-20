@@ -1,0 +1,51 @@
+#+title: kv
+
+A key-value store replicated by DiemBFT, one replica per process, with HTTP as
+the client. A demo, not a service: the replicas derive their keys from a public
+seed and talk without TLS, so run it on a private network such as a tailnet.
+
+#+begin_example
+PUT /kv/{key}   body is the value; returns once this replica commits it
+GET /kv/{key}   this replica's value
+GET /kv         this replica's whole store
+GET /metrics    round, blocks, blocks/s, client and propose-to-commit latency, counters
+GET /           a page with every replica side by side, and a form to put
+#+end_example
+
+A PUT that does not commit within 10 s answers 504, but the command may still
+commit later.
+
+* On one machine
+
+#+begin_src sh
+go build -o /tmp/kv ./examples/kv
+R=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003,127.0.0.1:9004
+H=127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083,127.0.0.1:8084
+for i in 1 2 3 4; do /tmp/kv -self 127.0.0.1:900$i -remotes $R -http $H & done
+curl -X PUT -d world http://127.0.0.1:8081/kv/hello
+curl http://127.0.0.1:8084/kv/hello
+#+end_src
+
+Open http://127.0.0.1:8081/. Interrupt a replica (SIGINT) to stop it; with
+=-output FILE= it writes a benchkit result file first, where an op is a
+command submitted to it, timed submit to commit.
+
+* Across machines
+
+Every host needs to be on the tailnet, reachable over ssh from here under
+its tailnet name (or =user@name=), and Linux, macOS or Android with Termux.
+This machine can be one of them. On this machine and on hc machines
+(=setup HOST=, or =hc machine add=) a replica runs in an hc terminal named
+=kv-demo-<id>=, so =hc attach nixos-laptop/kv-demo-2= shows it; elsewhere it
+runs under =nohup=. Every replica dials every other one, so the tailnet policy
+must let each host reach the others' consensus port.
+
+#+begin_src sh
+examples/kv/deploy.sh up nixos-desktop laptop vm1 vm2
+examples/kv/deploy.sh status
+examples/kv/deploy.sh down
+#+end_src
+
+=up= prints each replica's page. =down= stops them with Ctrl+C and fetches
+their output and result files into =out/kv/<time>/=. The consensus and HTTP ports (9000, 8080)
+must be open on the tailnet interface.

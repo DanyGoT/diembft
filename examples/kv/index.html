@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kv replicas</title>
+<style>
+  body { font: 14px monospace; margin: 1em; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #999; padding: 2px 8px; vertical-align: top; text-align: left; }
+  .down { color: #b00; }
+</style>
+<form id="put">
+  <input id="k" placeholder="key" required> <input id="v" placeholder="value">
+  <button>put</button> <span id="msg"></span>
+</form>
+<table id="t"></table>
+<script>
+const rows = [
+  ["round", m => m.round],
+  ["blocks", m => m.blocks],
+  ["blocks/s", m => m.blocks_per_s.toFixed(1)],
+  ["commands", m => m.commands],
+  ["client ms", m => m.client_latency_ms.toFixed(2)],
+  ["propose to commit ms", m => m.propose_to_commit_ms.toFixed(2)],
+  ["dropped / rejected / declined", m => `${m.dropped} / ${m.rejected} / ${m.declined}`],
+  ["last committed (round: k=v)", m => m.recent.join("\n")],
+  ["store", (m, kv) => Object.keys(kv).sort().map(k => `${k}=${kv[k]}`).join("\n")],
+];
+
+const esc = s => String(s).replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+
+async function poll(peers) {
+  const cols = await Promise.all(peers.map(async p => {
+    try {
+      const [m, kv] = await Promise.all(["metrics", "kv"].map(path =>
+        fetch(`http://${p.addr}/${path}`, {signal: AbortSignal.timeout(900)}).then(r => r.json())));
+      return {p, m, kv};
+    } catch { return {p}; }
+  }));
+  let html = "<tr><th></th>" + cols.map(c => `<th>${esc(c.p.name)}<br><small>${esc(c.p.addr)}</small></th>`).join("") + "</tr>";
+  for (const [name, f] of rows) {
+    html += `<tr><th>${name}</th>` + cols.map(c => c.m
+      ? `<td><pre>${esc(f(c.m, c.kv))}</pre></td>`
+      : `<td class="down">down</td>`).join("") + "</tr>";
+  }
+  document.getElementById("t").innerHTML = html;
+}
+
+document.getElementById("put").onsubmit = async e => {
+  e.preventDefault();
+  const k = document.getElementById("k").value, v = document.getElementById("v").value;
+  const r = await fetch(`/kv/${encodeURIComponent(k)}`, {method: "PUT", body: v});
+  document.getElementById("msg").textContent = (await r.text()).trim();
+};
+
+fetch("/peers").then(r => r.json()).then(peers => {
+  poll(peers);
+  setInterval(() => poll(peers), 1000);
+});
+</script>

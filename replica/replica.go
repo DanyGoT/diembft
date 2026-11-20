@@ -66,9 +66,12 @@ type Replica struct {
 	stopped  bool // Run has returned
 	onCommit func(*diempb.Block)
 
-	// proposeToCommit sums the propose-to-commit latency of own blocks.
+	// proposeToCommit sums the propose-to-commit latency of own blocks, and
+	// submitToCommit that of commands submitted here.
 	proposeToCommit time.Duration
 	ownCommits      uint64
+	submitToCommit  time.Duration
+	ownCommands     uint64
 
 	measure benchkit.Options
 	m       *benchkit.Measurement
@@ -155,7 +158,10 @@ func (r *Replica) commit(b *diempb.Block) {
 		r.onCommit(b)
 	}
 	for _, e := range own.entries {
-		r.m.Stats.AddLatency(time.Since(e.submitted))
+		l := time.Since(e.submitted)
+		r.m.Stats.AddLatency(l)
+		r.submitToCommit += l
+		r.ownCommands++
 		close(e.done)
 	}
 }
@@ -241,10 +247,47 @@ func (r *Replica) Log() []*diempb.Block {
 func (r *Replica) ProposeToCommit() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.ownCommits == 0 {
+	return mean(r.proposeToCommit, r.ownCommits)
+}
+
+// Stats is a live view of a replica.
+type Stats struct {
+	Round           uint64
+	Blocks          int    // committed
+	Commands        uint64 // carried by the committed blocks
+	ProposeToCommit time.Duration
+	SubmitToCommit  time.Duration // mean over the commands submitted here
+	Declined        uint64        // see DeclinedMissingAncestor
+	diemnet.Counters
+}
+
+// Stats is the replica's state now; zero until Started.
+func (r *Replica) Stats() Stats {
+	select {
+	case <-r.started:
+	default:
+		return Stats{} // Run holds mu until every peer is connected
+	}
+	c := r.Counters()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.core.State()
+	return Stats{
+		Round:           st.Round,
+		Blocks:          len(r.commits),
+		Commands:        r.commands,
+		ProposeToCommit: mean(r.proposeToCommit, r.ownCommits),
+		SubmitToCommit:  mean(r.submitToCommit, r.ownCommands),
+		Declined:        st.DeclinedMissingAncestor,
+		Counters:        c,
+	}
+}
+
+func mean(sum time.Duration, n uint64) time.Duration {
+	if n == 0 {
 		return 0
 	}
-	return r.proposeToCommit / time.Duration(r.ownCommits)
+	return sum / time.Duration(n)
 }
 
 // Commands is how many commands the committed blocks carried.
