@@ -142,12 +142,12 @@ func group(t *testing.T, n int, tlsByID map[uint32]*tls.Config, start func(*peer
 	return peers
 }
 
-// localServers is n Gorums local servers sharing one VerifyInterceptor over
-// c's keys, with the counter it rejects into.
+// localServers is n Gorums local servers verifying with c's keys, with the
+// counter they reject into.
 func localServers(t *testing.T, n int, c diem.Crypto, tlsByID map[uint32]*tls.Config, dial ...gorums.DialOption) ([]*gorums.Server, *atomic.Uint64, func()) {
 	t.Helper()
 	rejected := new(atomic.Uint64)
-	srvs, stop, err := LocalServers(n, diem.NewVerifier(c, diem.QuorumSize(n)), rejected, tlsByID, nil, dial...)
+	srvs, stop, err := LocalServers(n, c, rejected, tlsByID, nil, dial...)
 	if err != nil {
 		t.Fatalf("LocalServers: %v", err)
 	}

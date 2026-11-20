@@ -2,6 +2,9 @@ package diem
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"sync"
 
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"google.golang.org/protobuf/proto"
@@ -12,6 +15,10 @@ import (
 // what lets it run on the network's handler goroutines, before a message
 // reaches the core.
 //
+// It remembers the QCs whose signatures it has verified, since one QC comes
+// back in many later messages: as the high commit QC of every vote, and as a
+// timeout's high QC. Two handlers that both miss on one QC both verify it.
+//
 // It is also the edge that makes a wire message safe to read without checks:
 // every hash field of a message it accepts is exactly hashLen bytes, and a
 // block's id is the one recomputed from its fields, so no digest from the wire
@@ -19,11 +26,53 @@ import (
 type Verifier struct {
 	crypto Crypto
 	quorum int
+
+	mu sync.Mutex
+	// The keys of QCs whose signatures checked out, in two generations. Once
+	// recent is full it becomes older, and the previous older is dropped.
+	recent, older map[qcKey]struct{}
 }
+
+// verifiedCap bounds a generation of verified QCs. A replica sees about one
+// new QC per round, so this spans dozens of rounds.
+const verifiedCap = 64
+
+// qcKey identifies a QC by every input of its signature checks.
+type qcKey [sha256.Size]byte
 
 // NewVerifier builds a Verifier over the given Crypto and quorum size.
 func NewVerifier(crypto Crypto, quorum int) *Verifier {
-	return &Verifier{crypto: crypto, quorum: quorum}
+	return &Verifier{crypto: crypto, quorum: quorum, recent: map[qcKey]struct{}{}}
+}
+
+// keyOf hashes what the signature checks of qc read: the digest the quorum
+// signed, the signature set, and the author with its signature over the set.
+func keyOf(commitDigest, sigsDigest []byte, qc *diempb.QuorumCert) qcKey {
+	h := sha256.New()
+	h.Write(commitDigest)
+	h.Write(sigsDigest)
+	h.Write(binary.BigEndian.AppendUint32(nil, qc.GetAuthor()))
+	h.Write(qc.GetAuthorSig().GetSig())
+	return qcKey(h.Sum(nil))
+}
+
+func (v *Verifier) seen(k qcKey) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	_, ok := v.recent[k]
+	if !ok {
+		_, ok = v.older[k]
+	}
+	return ok
+}
+
+func (v *Verifier) remember(k qcKey) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if len(v.recent) == verifiedCap {
+		v.older, v.recent = v.recent, make(map[qcKey]struct{}, verifiedCap)
+	}
+	v.recent[k] = struct{}{}
 }
 
 // validHashes reports whether every hash is exactly hashLen bytes.
@@ -68,8 +117,13 @@ func (v *Verifier) VerifyQC(qc *diempb.QuorumCert) bool {
 	if vi := qc.GetVoteInfo(); qc.GetLedgerCommitInfo().Commits() && !consecutive(vi.GetRound(), vi.GetParentRound()) {
 		return false
 	}
-	if !v.verifyCert(qc.GetLedgerCommitInfo().Digest(), qc.GetSignatures()) {
+	if qc.GetAuthorSig().GetSigner() != qc.GetAuthor() {
 		return false
+	}
+	commitDigest, sigsDigest := qc.GetLedgerCommitInfo().Digest(), qc.SigsDigest()
+	key := keyOf(commitDigest, sigsDigest, qc)
+	if v.seen(key) {
+		return true
 	}
 	// The author signature is the paper's author_signature <- sign_u(signatures)
 	// (3.3, process_vote). It adds nothing to the quorum's authority; it binds
@@ -77,8 +131,11 @@ func (v *Verifier) VerifyQC(qc *diempb.QuorumCert) bool {
 	// which is what makes an aggregator that hands out two quorums over one vote
 	// attributable — the block id covers the set, so the two are different
 	// blocks.
-	return qc.GetAuthorSig().GetSigner() == qc.GetAuthor() &&
-		verifySig(v.crypto, qc.SigsDigest(), qc.GetAuthorSig())
+	if !v.verifyCert(commitDigest, qc.GetSignatures()) || !verifySig(v.crypto, sigsDigest, qc.GetAuthorSig()) {
+		return false
+	}
+	v.remember(key)
+	return true
 }
 
 // verifyCert checks a certificate carries at least a quorum of signers in

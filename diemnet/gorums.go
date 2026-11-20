@@ -104,12 +104,16 @@ func security(c *tls.Config) (gorums.DialOption, gorums.ServerOption) {
 }
 
 // LocalServers is gorums.NewLocalServers for a group of n replicas on
-// loopback, with VerifyInterceptor over v counting into rejected. tlsByID, if
-// set, holds each replica's TLS configuration, as Network.TLS does. srv and
-// dial are added to every replica's server and dial options.
-func LocalServers(n int, v *diem.Verifier, rejected *atomic.Uint64, tlsByID map[uint32]*tls.Config, srv []gorums.ServerOption, dial ...gorums.DialOption) ([]*gorums.Server, func(), error) {
+// loopback, each with VerifyInterceptor over its own Verifier of c's keys,
+// counting into rejected. tlsByID, if set, holds each replica's TLS
+// configuration, as Network.TLS does. srv and dial are added to every
+// replica's server and dial options.
+func LocalServers(n int, c diem.Crypto, rejected *atomic.Uint64, tlsByID map[uint32]*tls.Config, srv []gorums.ServerOption, dial ...gorums.DialOption) ([]*gorums.Server, func(), error) {
 	opts := []gorums.LocalServerOption{
-		gorums.WithLocalServerOptions(gorums.WithServerInterceptors(VerifyInterceptor(v, rejected))),
+		gorums.WithLocalServerOptionsFunc(func(gorums.ID) []gorums.ServerOption {
+			v := diem.NewVerifier(c, diem.QuorumSize(n))
+			return []gorums.ServerOption{gorums.WithServerInterceptors(VerifyInterceptor(v, rejected))}
+		}),
 		gorums.WithLocalServerOptions(srv...),
 		gorums.WithLocalDialOptionsFunc(func(id gorums.ID) []gorums.DialOption {
 			d, _ := security(tlsByID[id])
