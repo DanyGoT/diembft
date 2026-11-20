@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/DanyGoT/diembft/diemnet"
 	"github.com/DanyGoT/diembft/proto/diempb"
@@ -19,6 +20,7 @@ type summary struct {
 	id       uint32
 	log      []*diempb.Block
 	commands uint64
+	propose  time.Duration
 	declined uint64
 	counters diemnet.Counters
 }
@@ -28,6 +30,7 @@ func summarize(r *replica.Replica) summary {
 		id:       r.ID(),
 		log:      r.Log(),
 		commands: r.Commands(),
+		propose:  r.ProposeToCommit(),
 		declined: r.DeclinedMissingAncestor(),
 		counters: r.Counters(),
 	}
@@ -38,8 +41,8 @@ func summarize(r *replica.Replica) summary {
 // the whole point of running the thing.
 func report(w io.Writer, sums []summary) error {
 	for _, s := range sums {
-		_, _ = fmt.Fprintf(w, "replica %d: committed %d (%d commands), dropped %d, declined for a missing ancestor %d, rejected %d\n",
-			s.id, len(s.log), s.commands, s.counters.OutboundDropped, s.declined, s.counters.Rejected)
+		_, _ = fmt.Fprintf(w, "replica %d: committed %d (%d commands), propose to commit %v, dropped %d, declined for a missing ancestor %d, rejected %d\n",
+			s.id, len(s.log), s.commands, s.propose.Round(time.Microsecond), s.counters.OutboundDropped, s.declined, s.counters.Rejected)
 		for _, id := range slices.Sorted(maps.Keys(s.counters.DroppedTo)) {
 			if n := s.counters.DroppedTo[id]; n > 0 {
 				_, _ = fmt.Fprintf(w, "  to peer %d: dropped %d\n", id, n)

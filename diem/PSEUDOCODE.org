@@ -437,8 +437,7 @@ The only procedure the paper declares in this module, with no body.
 - Implemented :: =seams.go:MemPool=, the =Config.MemPool= field, called in
   =core.go:processNewRoundEvent=. In production it is
   =replica/pool.go:pool=, over the commands clients submit with
-  =replica.go:Replica.Submit=, or =replica/payload.go:GetTransactions=, a
-  synthetic workload, when =replica.go:Config.MemPool= replaces it.
+  =replica.go:Replica.Submit=.
 - Differs :: nothing the paper constrains. An empty result is normal and still
   produces a block, since the pipeline is what commits the blocks below it.
   The pool keeps what it hands out until it commits, and puts back the

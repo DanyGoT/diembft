@@ -6,10 +6,12 @@
 // cluster. Standard flags with no meaning for one protocol, such as -benchmarks,
 // are accepted and ignored.
 //
-// diem has no clients, so -workers, in benchkit the number of concurrent
-// callers, is the batch here: the most commands a leader puts in one block,
-// each -payload bytes. With -payload 0 blocks are empty and -workers is
-// unused. The Workers column of diem's result files is that batch.
+// Each replica runs -workers clients in its own process. A client submits one
+// command of -payload bytes and waits for it to commit; together a replica's
+// clients send at most -rate commands per second. An op in the result file is
+// a committed command, timed submit to commit. -batch caps the commands per
+// block. It is not a benchkit dimension, so through sweep it goes in
+// -extra-args. With -workers 0 blocks are empty.
 //
 // -fault-kill-after crashes replica -fault-replica that long after its first
 // round, the point -time also counts from, so the wait for peers is not in it.
@@ -33,7 +35,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DanyGoT/diembft/diem"
 	"github.com/DanyGoT/diembft/diemcrypto"
 	"github.com/DanyGoT/diembft/diemnet"
 	"github.com/DanyGoT/diembft/replica"
@@ -50,6 +51,7 @@ type options struct {
 	insecureSeeded bool
 	genKeys        bool
 	viewDuration   time.Duration
+	batch          int
 	sendBuffer     uint
 	recvBuffer     uint
 	faultReplica   int
@@ -62,6 +64,7 @@ func newOptions(fs *flag.FlagSet) *options {
 	fs.StringVar(&o.keys, "keys", "", "directory holding <id>.key, <id>.pub and <id>.crt; replicas then talk over mutual TLS; required unless -insecure-seeded-keys")
 	fs.BoolVar(&o.insecureSeeded, "insecure-seeded-keys", false, "without -keys, derive every replica's keys from a public seed and talk without TLS; anyone can sign for any replica")
 	fs.BoolVar(&o.genKeys, "gen-keys", false, "write a key pair and TLS certificate per replica into -keys and exit")
+	fs.IntVar(&o.batch, "batch", 0, "the most commands per block; 0 picks a default")
 	fs.DurationVar(&o.viewDuration, "view-duration", 0, "round timer α; it grows by α/2 per round since the last commit; 0 picks a default")
 	fs.UintVar(&o.sendBuffer, "send-buffer", 0, "Gorums send queue capacity per peer; 0 picks Gorums' default")
 	fs.UintVar(&o.recvBuffer, "recv-buffer", 0, "Gorums receive queue capacity per stream; 0 picks Gorums' default")
@@ -148,40 +151,49 @@ func (o *options) runLocal(n int) error {
 	if err != nil {
 		return err
 	}
-	privs, pubs, err := diemcrypto.GenerateKeys(n)
+	reps, stop, err := o.localCluster(n)
 	if err != nil {
 		return err
 	}
+	defer stop()
+	return o.runAll(n, reps, target)
+}
+
+// localCluster builds the n replicas of runLocal; stop shuts their servers.
+func (o *options) localCluster(n int) ([]*replica.Replica, func(), error) {
+	privs, pubs, err := diemcrypto.GenerateKeys(n)
+	if err != nil {
+		return nil, nil, err
+	}
 	certs, err := diemcrypto.Certificates(privs)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	tlsByID := make(map[uint32]*tls.Config, n)
 	for id, key := range privs {
 		if tlsByID[id], err = diemcrypto.TLSConfig(id, key, certs); err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
 	rejected := new(atomic.Uint64)
 	srvs, stop, err := diemnet.LocalServers(n, diemcrypto.New(nil, pubs), rejected, tlsByID, o.serverOptions(), o.dialOptions()...)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer stop()
 
 	reps := make([]*replica.Replica, n)
 	for i := range n {
 		id := uint32(i + 1)
 		reps[i] = replica.New(replica.Config{
 			ID: id, Key: privs[id], Keys: pubs,
-			MemPool:      o.mempool(),
+			Batch:        o.batch,
 			RoundTimeout: o.viewDuration,
 			Measure:      o.std.Options(),
 			Server:       srvs[i],
 			Rejected:     rejected,
 		})
 	}
-	return o.runAll(n, reps, target)
+	return reps, stop, nil
 }
 
 // replicaKeys reads id's keys from -keys. Without it, the seeded set every
@@ -246,7 +258,7 @@ func (o *options) runOne() error {
 	return o.runAll(len(addrs), []*replica.Replica{replica.New(replica.Config{
 		ID: id, Peers: peers, Listen: self, TLS: tlsConfig,
 		Key: priv, Keys: pubs,
-		MemPool:       o.mempool(),
+		Batch:         o.batch,
 		RoundTimeout:  o.viewDuration,
 		Measure:       o.std.Options(),
 		DialOptions:   o.dialOptions(),
@@ -254,9 +266,9 @@ func (o *options) runOne() error {
 	})}, target)
 }
 
-// runAll runs reps, this process's share of an n-replica cluster, for -time
-// from its first round, or until the process is interrupted, then reports what
-// each committed. Replica target, if it is here, stops -fault-kill-after past
+// runAll runs reps, this process's share of an n-replica cluster, and their
+// clients for -time from its first round, or until the process is interrupted,
+// then reports what each committed. Replica target, if it is here, stops -fault-kill-after past
 // its first round, so neither counts the wait for peers.
 func (o *options) runAll(n int, reps []*replica.Replica, target uint32) error {
 	root, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -275,6 +287,7 @@ func (o *options) runAll(n int, reps []*replica.Replica, target uint32) error {
 				}
 			})
 		}
+		wg.Go(func() { o.clients(ctx, r, 0) })
 		wg.Go(func() {
 			defer stop()
 			if err := r.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
@@ -331,14 +344,6 @@ func (o *options) addresses() ([]string, error) {
 		addrs[i] = addr
 	}
 	return addrs, nil
-}
-
-// mempool is the leader's payload source; nil proposes empty blocks.
-func (o *options) mempool() diem.MemPool {
-	if o.std.Payload <= 0 {
-		return nil
-	}
-	return replica.NewPayload(o.std.Payload, o.std.Workers, o.std.Rate)
 }
 
 func (o *options) dialOptions() []gorums.DialOption {

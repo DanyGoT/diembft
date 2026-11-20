@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"net"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,7 +63,6 @@ func cluster(t *testing.T, n int, round time.Duration, edit func(*Config), dial 
 			ID:           id,
 			Key:          privs[id],
 			Keys:         pubs,
-			MemPool:      NewPayload(32, 4, 0),
 			RoundTimeout: round,
 			Measure:      benchkit.Options{Interval: round},
 			Server:       srvs[i],
@@ -170,10 +168,10 @@ func TestClusterCommitsIdenticalPrefix(t *testing.T) {
 	<-allDone
 }
 
-// TestResultCountsOwnBlocks pins that a replica's result counts only the
-// committed blocks it proposed, so the replicas' throughputs sum to the system
+// TestResultCountsOwnCommands pins that a replica's result counts only the
+// commands submitted to it, so the replicas' throughputs sum to the system
 // rate rather than n times it, and that the interval stream covers every op.
-func TestResultCountsOwnBlocks(t *testing.T) {
+func TestResultCountsOwnCommands(t *testing.T) {
 	reps, run := cluster(t, 4, testRound, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -181,30 +179,41 @@ func TestResultCountsOwnBlocks(t *testing.T) {
 	allDone := make(chan struct{})
 	go func() { run(ctx); close(allDone) }()
 
-	const wantDepth = 20
-	if !waitFor(10*time.Second, func() bool { return slices.Min(depths(reps)) >= wantDepth }) {
-		t.Fatalf("depths after timeout: %v, want every replica >= %d", depths(reps), wantDepth)
+	const perReplica = 5
+	var wg sync.WaitGroup
+	for _, r := range reps {
+		wg.Go(func() {
+			<-r.Started()
+			for i := range perReplica {
+				done, ok := r.Submit(fmt.Appendf(nil, "%d-%d", r.ID(), i))
+				if !ok {
+					t.Errorf("replica %d: Submit refused command %d", r.ID(), i)
+					return
+				}
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Errorf("replica %d: command %d did not commit", r.ID(), i)
+					return
+				}
+			}
+		})
 	}
+	wg.Wait()
 	cancel()
 	<-allDone
 
 	for _, r := range reps {
-		var own uint64
-		for _, b := range r.Log() {
-			if b.GetAuthor() == r.ID() {
-				own++
-			}
-		}
 		res := r.Result()
-		if got := res.GetTotalOps(); got != own {
-			t.Errorf("replica %d: TotalOps = %d, want %d own blocks of %d committed", r.ID(), got, own, len(r.Log()))
+		if got := res.GetTotalOps(); got != perReplica {
+			t.Errorf("replica %d: TotalOps = %d, want %d of %d committed commands", r.ID(), got, perReplica, r.Commands())
 		}
 		var streamed uint64
 		for _, e := range res.GetEvents() {
 			streamed += e.GetThroughput().GetOps()
 		}
-		if streamed != own {
-			t.Errorf("replica %d: interval events carry %d ops, want %d", r.ID(), streamed, own)
+		if streamed != perReplica {
+			t.Errorf("replica %d: interval events carry %d ops, want %d", r.ID(), streamed, perReplica)
 		}
 	}
 }
@@ -220,7 +229,6 @@ func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 	reps, run := cluster(t, n, testRound, func(cfg *Config) {
 		i := cfg.ID - 1
 		seen[i] = map[string]int{}
-		cfg.MemPool = nil
 		cfg.OnCommit = func(b *diempb.Block) {
 			mu.Lock()
 			defer mu.Unlock()
