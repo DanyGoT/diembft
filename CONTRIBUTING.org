@@ -21,4 +21,4 @@ Use common sense, and follow these where they apply:
 * Before a PR
 
 Run =make fix lint test race check-deps=, and fix every finding. =make lint=
-needs golangci-lint on your =PATH=. CI runs the same checks on every push.
+builds golangci-lint from =tools/go.mod=. CI runs the same checks on every push.
