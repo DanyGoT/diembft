@@ -31,10 +31,6 @@ type Config struct {
 	Key  *ecdsa.PrivateKey
 	Keys map[uint32]*ecdsa.PublicKey
 
-	// MemPool, if set, supplies a leader's payload in place of the commands
-	// clients Submit.
-	MemPool diem.MemPool
-
 	// Batch is the most submitted commands per block, and PoolSize the most
 	// submitted and not yet committed. 0 picks a default.
 	Batch, PoolSize int
@@ -67,11 +63,14 @@ type Replica struct {
 	commits  []*diempb.Block
 	commands uint64
 	pool     *pool
-	waiting  map[string]chan struct{} // submitted and not yet committed, by command
+	waiting  map[string]waiter // submitted and not yet committed, by command
 	poolSize int
-	external bool // Config.MemPool replaces the pool
 	stopped  bool // Run has returned
 	onCommit func(*diempb.Block)
+
+	// proposeToCommit sums the propose-to-commit latency of own blocks.
+	proposeToCommit time.Duration
+	ownCommits      uint64
 
 	measure benchkit.Options
 	m       *benchkit.Measurement
@@ -105,16 +104,11 @@ func New(cfg Config) *Replica {
 	r := &Replica{
 		id:       cfg.ID,
 		pool:     &pool{batch: cfg.Batch},
-		waiting:  map[string]chan struct{}{},
+		waiting:  map[string]waiter{},
 		poolSize: cfg.PoolSize,
-		external: cfg.MemPool != nil,
 		onCommit: cfg.OnCommit,
 		measure:  cfg.Measure,
 		started:  make(chan struct{}),
-	}
-	var mempool diem.MemPool = r.pool
-	if r.external {
-		mempool = cfg.MemPool
 	}
 	ledger := diem.NewMemLedger()
 	ledger.OnCommit = r.commit
@@ -133,7 +127,7 @@ func New(cfg Config) *Replica {
 		Clock:      diem.SystemClock{},
 		RoundTimer: diem.RoundTimer{Alpha: cfg.RoundTimeout, Beta: cfg.RoundTimeout / 2},
 		Lock:       &r.mu,
-		MemPool:    mempool,
+		MemPool:    r.pool,
 	})
 	return r
 }
@@ -149,13 +143,20 @@ func (s stamper) Proposal(p *diempb.ProposalMsg) {
 	s.Transport.Proposal(p)
 }
 
-// commit appends b to the log and, for a block this replica proposed, records
-// its propose-to-commit latency. OnCommit runs before the block's waiters
-// wake, so a client sees its command applied. It runs inside a core call, so
-// mu is already held.
+// waiter is a submitted command's client.
+type waiter struct {
+	done      chan struct{}
+	submitted time.Time
+}
+
+// commit appends b to the log, records the propose-to-commit latency of a
+// block this replica proposed and the submit-to-commit latency of each command
+// submitted here. OnCommit runs before the block's waiters wake, so a client
+// sees its command applied. It runs inside a core call, so mu is already held.
 func (r *Replica) commit(b *diempb.Block) {
 	if sent, own := r.pool.committed(b, r.id); own {
-		r.m.Stats.AddLatency(time.Since(sent))
+		r.proposeToCommit += time.Since(sent)
+		r.ownCommits++
 	}
 	r.commits = append(r.commits, b)
 	r.commands += uint64(len(b.GetPayload()))
@@ -163,27 +164,24 @@ func (r *Replica) commit(b *diempb.Block) {
 		r.onCommit(b)
 	}
 	for _, cmd := range b.GetPayload() {
-		if done, ok := r.waiting[string(cmd)]; ok {
+		if w, ok := r.waiting[string(cmd)]; ok {
 			delete(r.waiting, string(cmd))
-			close(done)
+			r.m.Stats.AddLatency(time.Since(w.submitted))
+			close(w.done)
 		}
 	}
 }
 
 // Submit offers cmd for ordering; done closes once it is committed here. It
-// returns false before Started, after Run has returned, when Config.MemPool
-// replaces the pool, when PoolSize commands are already waiting, or when cmd
-// itself is. Commands must be unique across the cluster, since a committed one
-// is matched to its waiter by its bytes. A done still open when Run returns
-// never closes.
+// returns false before Started, after Run has returned, when PoolSize commands
+// are already waiting, or when cmd itself is. Commands must be unique across
+// the cluster, since a committed one is matched to its waiter by its bytes. A
+// done still open when Run returns never closes.
 func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
 	select {
 	case <-r.started:
 	default:
 		return nil, false // Run holds mu until every peer is connected
-	}
-	if r.external {
-		return nil, false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -191,10 +189,10 @@ func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
 	if _, dup := r.waiting[key]; dup || r.stopped || len(r.waiting) >= r.poolSize {
 		return nil, false
 	}
-	c := make(chan struct{})
-	r.waiting[key] = c
+	w := waiter{done: make(chan struct{}), submitted: time.Now()}
+	r.waiting[key] = w
 	r.pool.add([]byte(key))
-	return c, true
+	return w.done, true
 }
 
 // Run serves the transport, waits for every peer, then runs consensus until
@@ -235,8 +233,8 @@ func (r *Replica) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// Result is the run's measurement: an op is a committed block this replica
-// proposed, timed propose to commit on its own clock. Read it only after Run
+// Result is the run's measurement: an op is a committed command submitted to
+// this replica, timed submit to commit on its own clock. Read it only after Run
 // returns; it is nil if Run never reached the first round.
 func (r *Replica) Result() *benchkit.Result { return r.result }
 
@@ -253,6 +251,17 @@ func (r *Replica) Log() []*diempb.Block {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]*diempb.Block(nil), r.commits...)
+}
+
+// ProposeToCommit is the mean time from sending a proposal to committing it,
+// over the committed blocks this replica proposed.
+func (r *Replica) ProposeToCommit() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ownCommits == 0 {
+		return 0
+	}
+	return r.proposeToCommit / time.Duration(r.ownCommits)
 }
 
 // Commands is how many commands the committed blocks carried.

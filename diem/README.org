@@ -151,6 +151,7 @@ Four replicas in one process:
 go run ./cmd/diem -local 4 -time 10s -payload 32 -workers 4
 #+end_src
 
-Each replica prints how many blocks it committed, how many votes it declined
+Each replica runs four clients. It prints how many blocks and commands it
+committed, its mean propose-to-commit time, how many votes it declined
 for a missing ancestor, and how many messages the edge rejected. The =-local=
 runs also check that every replica's log agrees over the prefix they share.
