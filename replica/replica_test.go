@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"sync"
@@ -38,9 +39,10 @@ func waitFor(timeout time.Duration, pred func() bool) bool {
 }
 
 // cluster builds n replicas on one process's Gorums local servers, adding dial
-// to their dial options, and returns them with a func that runs them under ctx
-// and blocks until every Run has returned.
-func cluster(t *testing.T, n int, round time.Duration, dial ...gorums.DialOption) ([]*Replica, func(context.Context)) {
+// to their dial options and letting edit, if set, change each Config. It
+// returns them with a func that runs them under ctx and blocks until every Run
+// has returned.
+func cluster(t *testing.T, n int, round time.Duration, edit func(*Config), dial ...gorums.DialOption) ([]*Replica, func(context.Context)) {
 	t.Helper()
 
 	privs, pubs, err := diemcrypto.GenerateKeys(n)
@@ -57,7 +59,7 @@ func cluster(t *testing.T, n int, round time.Duration, dial ...gorums.DialOption
 	reps := make([]*Replica, n)
 	for i := range n {
 		id := uint32(i + 1)
-		reps[i] = New(Config{
+		cfg := Config{
 			ID:           id,
 			Key:          privs[id],
 			Keys:         pubs,
@@ -66,7 +68,11 @@ func cluster(t *testing.T, n int, round time.Duration, dial ...gorums.DialOption
 			Measure:      benchkit.Options{Interval: round},
 			Server:       srvs[i],
 			Rejected:     rejected,
-		})
+		}
+		if edit != nil {
+			edit(&cfg)
+		}
+		reps[i] = New(cfg)
 	}
 
 	run := func(ctx context.Context) {
@@ -98,7 +104,7 @@ func depths(reps []*Replica) []int {
 // that the wire round trip is faithful.
 func TestClusterCommitsIdenticalPrefix(t *testing.T) {
 	const n = 4
-	reps, run := cluster(t, n, testRound)
+	reps, run := cluster(t, n, testRound, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -167,7 +173,7 @@ func TestClusterCommitsIdenticalPrefix(t *testing.T) {
 // committed blocks it proposed, so the replicas' throughputs sum to the system
 // rate rather than n times it, and that the interval stream covers every op.
 func TestResultCountsOwnBlocks(t *testing.T) {
-	reps, run := cluster(t, 4, testRound)
+	reps, run := cluster(t, 4, testRound, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -198,6 +204,74 @@ func TestResultCountsOwnBlocks(t *testing.T) {
 		}
 		if streamed != own {
 			t.Errorf("replica %d: interval events carry %d ops, want %d", r.ID(), streamed, own)
+		}
+	}
+}
+
+// TestSubmitCommitsOnEveryReplica pins that a command submitted to one replica
+// reaches every replica's OnCommit exactly once, and that its submitter is told
+// once it has committed there.
+func TestSubmitCommitsOnEveryReplica(t *testing.T) {
+	const n = 4
+	var mu sync.Mutex
+	seen := make([]map[string]int, n)
+	reps, run := cluster(t, n, testRound, func(cfg *Config) {
+		i := cfg.ID - 1
+		seen[i] = map[string]int{}
+		cfg.MemPool = nil
+		cfg.OnCommit = func(b *diempb.Block) {
+			mu.Lock()
+			defer mu.Unlock()
+			for _, cmd := range b.GetPayload() {
+				seen[i][string(cmd)]++
+			}
+		}
+	})
+	if _, ok := reps[0].Submit([]byte("early")); ok {
+		t.Error("Submit before Started accepted a command")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	allDone := make(chan struct{})
+	go func() { run(ctx); close(allDone) }()
+
+	for _, r := range reps {
+		<-r.Started()
+		done, ok := r.Submit(fmt.Appendf(nil, "cmd-%d", r.ID()))
+		if !ok {
+			t.Fatalf("replica %d: Submit refused a command", r.ID())
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("replica %d: its command did not commit", r.ID())
+		}
+	}
+	all := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for i := range seen {
+			if len(seen[i]) < n {
+				return false
+			}
+		}
+		return true
+	}
+	if !waitFor(10*time.Second, all) {
+		t.Fatal("not every replica committed every command")
+	}
+	cancel()
+	<-allDone
+	if _, ok := reps[0].Submit([]byte("late")); ok {
+		t.Error("Submit after Run returned accepted a command")
+	}
+
+	for i, m := range seen {
+		for cmd, k := range m {
+			if k != 1 {
+				t.Errorf("replica %d: %s committed %d times, want once", i+1, cmd, k)
+			}
 		}
 	}
 }
@@ -233,7 +307,7 @@ func TestStartedWaitsForPeers(t *testing.T) {
 	default:
 	}
 
-	reps, run := cluster(t, 4, testRound)
+	reps, run := cluster(t, 4, testRound, nil)
 	ctx, cancel = context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	allDone := make(chan struct{})
@@ -272,7 +346,7 @@ func (s stalled) SendMsg(any) error {
 // the queues and are counted as drops instead of blocking the core with mu
 // held, and cancelling must still stop every replica.
 func TestStalledPeersDropInsteadOfBlocking(t *testing.T) {
-	reps, run := cluster(t, 4, testRound, gorums.WithDialBufferSizes(0, 1), stallStreams)
+	reps, run := cluster(t, 4, testRound, nil, gorums.WithDialBufferSizes(0, 1), stallStreams)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
