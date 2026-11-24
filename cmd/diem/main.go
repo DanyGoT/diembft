@@ -270,12 +270,16 @@ func (o *options) runOne() error {
 // clients for -time from its first round, or until the process is interrupted,
 // then reports what each committed. Replica target, if it is here, stops -fault-kill-after past
 // its first round, so neither counts the wait for peers.
+// A replica that fails, for example because not every replica was ready within
+// the start timeout, fails the run, and nothing is reported.
 func (o *options) runAll(n int, reps []*replica.Replica, target uint32) error {
 	root, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	var wg sync.WaitGroup
 	var fault *time.Timer
+	var mu sync.Mutex
+	var failed error
 	for _, r := range reps {
 		ctx, stop := context.WithCancel(root)
 		if r.ID() == target {
@@ -291,13 +295,18 @@ func (o *options) runAll(n int, reps []*replica.Replica, target uint32) error {
 		wg.Go(func() {
 			defer stop()
 			if err := r.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				slog.Error("replica stopped", "id", r.ID(), "err", err)
+				mu.Lock()
+				failed = errors.Join(failed, fmt.Errorf("replica %d: %w", r.ID(), err))
+				mu.Unlock()
 			}
 		})
 	}
 	wg.Wait()
 	if fault != nil {
 		fault.Stop()
+	}
+	if failed != nil {
+		return failed
 	}
 	sums := make([]summary, len(reps))
 	results := make([]*benchkit.Result, len(reps))
