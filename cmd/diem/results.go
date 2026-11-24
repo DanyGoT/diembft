@@ -94,7 +94,7 @@ func (o *options) writeResults(n int, results []*benchkit.Result) error {
 // client, or an empty call.
 func (o *options) benchmark() string {
 	switch {
-	case o.ping:
+	case o.client && o.ping:
 		return "diem-ping"
 	case o.client:
 		return "diem-client"

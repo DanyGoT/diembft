@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
@@ -21,9 +22,9 @@ import (
 	"github.com/relab/gorums/benchkit"
 )
 
-// callTimeout bounds one call. A command that has not committed by then is a
-// failed op, and the client moves on to its next.
-const callTimeout = 10 * time.Second
+// defaultCallTimeout bounds one call without -call-timeout. A command that has
+// not committed by then is a failed op, and the client moves on to its next.
+const defaultCallTimeout = 10 * time.Second
 
 // runClient runs -workers network clients against the replicas in -remotes
 // for -time, or until interrupted, and reports their submit-to-commit latency,
@@ -80,8 +81,9 @@ func (o *options) runClient() error {
 
 // netClient is one client, id, with one call in flight.
 func (o *options) netClient(ctx context.Context, c *diemnet.Client, m *benchkit.Measurement, id uint64, pacer *benchkit.Pacer) {
+	timeout := cmp.Or(o.std.CallTimeout, defaultCallTimeout)
 	for seq := uint64(1); pacer.Wait(ctx); seq++ {
-		cctx, cancel := context.WithTimeout(ctx, callTimeout)
+		cctx, cancel := context.WithTimeout(ctx, timeout)
 		start := time.Now()
 		var err error
 		if o.ping {
