@@ -3,7 +3,9 @@ package diem
 import (
 	"bytes"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/DanyGoT/diembft/proto/diempb"
 )
@@ -282,13 +284,24 @@ func TestMakeTimeout(t *testing.T) {
 	})
 }
 
-// restarted is replica 1 back from a crash: a fresh ledger, and counters
-// loaded from what store last saved.
+// restarted is replica 1 back from a crash: a fresh ledger, and a Core built
+// from what store last saved, as replica.New builds one.
 func restarted(store *memStore) *safetyFixture {
-	f := newSafetyFixture(1)
-	f.safety.set(store.saved)
-	f.safety.store = store
-	return f
+	ledger := NewMemLedger()
+	crypto := newTestSigner(testN)
+	c := New(Config{
+		ID:          1,
+		Validators:  []uint32{1, 2, 3, 4},
+		Ledger:      ledger,
+		Crypto:      crypto,
+		Transport:   &recordNet{},
+		Clock:       newFakeClock(),
+		RoundTimer:  RoundTimer{Alpha: time.Second},
+		Lock:        new(sync.Mutex),
+		SafetyState: store.saved,
+		SafetyStore: store,
+	})
+	return &safetyFixture{safety: c.safety, ledger: ledger, crypto: crypto}
 }
 
 // round2 speculates a round-1 block and, over its QC, a round-2 block carrying
@@ -349,13 +362,32 @@ func TestRestartKeepsSafety(t *testing.T) {
 		if f.safety.MakeVote(b, nil) == nil {
 			t.Fatal("MakeVote = nil, want a vote")
 		}
+		// Round 2 behind TC(1) passes every check but the QC floor: the saved
+		// vote round is 2, and the timeout reports genesis.
 		g := restarted(store)
-		if to := g.safety.MakeTimeout(1, GenesisQC(), nil); to != nil {
+		if to := g.safety.MakeTimeout(2, GenesisQC(), makeTC(1, 0, 0, 0)); to != nil {
 			t.Error("restarted replica timed out reporting a QC below the round-1 QC it voted on")
 		}
 	})
 
-	t.Run("a failed save signs nothing and the retry saves", func(t *testing.T) {
+	t.Run("a failed save signs no vote and the retry saves", func(t *testing.T) {
+		store := &memStore{err: errors.New("disk full")}
+		f := newSafetyFixture(1)
+		f.safety.store = store
+		b, _ := round2(f, "b")
+		if v := f.safety.MakeVote(b, nil); v != nil {
+			t.Fatal("MakeVote signed although the save failed")
+		}
+		store.err = nil
+		if f.safety.MakeVote(b, nil) == nil {
+			t.Fatal("retried MakeVote = nil, want a vote")
+		}
+		if want := (SafetyState{HighestVoteRound: 2, HighestQCRound: 1}); store.saved != want {
+			t.Errorf("saved %+v, want %+v", store.saved, want)
+		}
+	})
+
+	t.Run("a failed save signs no timeout and the retry saves", func(t *testing.T) {
 		store := &memStore{err: errors.New("disk full")}
 		f := newSafetyFixture(1)
 		f.safety.store = store
