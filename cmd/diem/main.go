@@ -16,7 +16,8 @@
 // With -client it runs no replica: it runs -workers network clients against
 // the replicas in -remotes. Each submits one command to every replica, waits
 // for the first reply that proves the command committed, and checks it; an op
-// is then a command timed until its proof checked out. With -ping an op is an
+// is then a command timed until its proof checked out, and one past
+// -call-timeout (10s if unset) a failed op. With -ping an op is an
 // empty call to every replica, answered at the first reply: the network's
 // share of that latency. Run the replicas with -workers 0 to measure only
 // these clients.
