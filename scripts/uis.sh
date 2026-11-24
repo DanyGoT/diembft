@@ -26,6 +26,9 @@
 #   UIS_USER your UiS username, for ssh-config only
 set -euo pipefail
 
+# sweep copies itself to the VMs, so every Go build here must be static.
+export CGO_ENABLED=0
+
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 gorums=${GORUMS:-}
 hosts=${HOSTS:-pitter[1-15]}
@@ -37,7 +40,7 @@ sweepbin=$repo/bin/sweep
 # target's protobuf regeneration, which needs protoc.
 build() {
     : "${GORUMS:?point it at a Gorums checkout that holds benchkit/}"
-    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -C "$repo" -o "$bin" ./cmd/diem &&
+    GOOS=linux GOARCH=amd64 go build -C "$repo" -o "$bin" ./cmd/diem &&
         go build -C "$gorums/benchkit/cmd/sweep" -o "$sweepbin" .
 }
 
