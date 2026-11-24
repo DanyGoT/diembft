@@ -242,7 +242,7 @@ func (r *Replica) start(ctx context.Context) error {
 	if err == nil {
 		err = r.net.Barrier(ctx)
 	}
-	if ctx.Err() != nil {
+	if err != nil && ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
 	return err
