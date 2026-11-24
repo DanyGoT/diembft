@@ -18,6 +18,7 @@ import (
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"github.com/relab/gorums"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -30,6 +31,11 @@ const fetchTimeout = time.Second
 // barrierRetry paces a Barrier whose call a peer failed, for example because
 // its server stopped.
 const barrierRetry = 50 * time.Millisecond
+
+// redial shortens gRPC's wait between dials to a peer that is not up yet, by
+// default 1 s growing to 120 s, so a replica that starts before its peers
+// connects soon after they come up.
+var redial = gorums.WithBackoff(backoff.Config{BaseDelay: 50 * time.Millisecond, Multiplier: 1.6, Jitter: 0.2, MaxDelay: time.Second})
 
 // Config is what the transport and its inbound handlers need.
 type Config struct {
@@ -183,7 +189,7 @@ func New(cfg Config) *Transport {
 		dial, serve := security(cfg.TLS)
 		srv = gorums.NewServer(append([]gorums.ServerOption{
 			gorums.WithAddr(cfg.Listen),
-			gorums.WithPeers(cfg.ID, nodes(cfg.Peers, cfg.TLS != nil), append([]gorums.DialOption{dial}, cfg.DialOptions...)...),
+			gorums.WithPeers(cfg.ID, nodes(cfg.Peers, cfg.TLS != nil), append([]gorums.DialOption{dial, redial}, cfg.DialOptions...)...),
 			gorums.WithServerInterceptors(VerifyInterceptor(cfg.Verifier, cfg.Rejected)),
 			serve,
 		}, cfg.ServerOptions...)...)
