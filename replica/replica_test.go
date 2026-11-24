@@ -411,6 +411,15 @@ func TestStartWaitsForEveryReplica(t *testing.T) {
 		wg.Go(func() { _ = reps[i].Run(ctx) })
 	}
 
+	// Replicas 2-4 have every peer before anything is checked, so without the
+	// barrier they would start at once.
+	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer waitCancel()
+	for _, r := range reps[1:] {
+		if err := r.net.WaitForPeers(waitCtx); err != nil {
+			t.Fatalf("replica %d: peers not connected: %v", r.ID(), err)
+		}
+	}
 	started := func() bool {
 		for _, r := range reps {
 			select {

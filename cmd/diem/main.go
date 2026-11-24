@@ -271,7 +271,8 @@ func (o *options) runOne() error {
 // then reports what each committed. Replica target, if it is here, stops -fault-kill-after past
 // its first round, so neither counts the wait for peers.
 // A replica that fails, for example because not every replica was ready within
-// the start timeout, fails the run, and nothing is reported.
+// the start timeout, stops the others and fails the run, and nothing is
+// reported.
 func (o *options) runAll(n int, reps []*replica.Replica, target uint32) error {
 	root, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -298,6 +299,7 @@ func (o *options) runAll(n int, reps []*replica.Replica, target uint32) error {
 				mu.Lock()
 				failed = errors.Join(failed, fmt.Errorf("replica %d: %w", r.ID(), err))
 				mu.Unlock()
+				cancel()
 			}
 		})
 	}
