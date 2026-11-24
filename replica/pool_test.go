@@ -97,19 +97,19 @@ func TestPoolRequeuesUnsentHandout(t *testing.T) {
 // never frees space refuses every Submit once it has filled.
 func TestPoolFreesCommittedCommands(t *testing.T) {
 	p := newPool(1, "a")
-	if _, ok := p.add([]byte("b")); ok {
+	if p.add([]byte("b")) {
 		t.Fatal("a full pool accepted a command")
 	}
 	p.GetTransactions()
 	p.proposed(5, time.Now())
 	p.committed(block(2, 4), self)
-	if _, ok := p.add([]byte("b")); ok {
+	if p.add([]byte("b")) {
 		t.Fatal("a command in flight stopped counting before it committed")
 	}
 	if f, _ := p.committed(block(self, 5), self); len(f.entries) != 1 {
 		t.Fatalf("committed returned %d entries, want 1", len(f.entries))
 	}
-	if _, ok := p.add([]byte("b")); !ok {
+	if !p.add([]byte("b")) {
 		t.Error("a committed command still counts against the pool's size")
 	}
 }

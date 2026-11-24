@@ -194,13 +194,13 @@ func TestResultCountsOwnCommands(t *testing.T) {
 		wg.Go(func() {
 			<-r.Started()
 			for i := range perReplica {
-				done, ok := r.Submit(fmt.Appendf(nil, "%d-%d", r.ID(), i))
+				p, ok := r.Submit(command(uint64(r.ID()), uint64(i+1)))
 				if !ok {
 					t.Errorf("replica %d: Submit refused command %d", r.ID(), i)
 					return
 				}
 				select {
-				case <-done:
+				case <-p.Done():
 				case <-time.After(10 * time.Second):
 					t.Errorf("replica %d: command %d did not commit", r.ID(), i)
 					return
@@ -227,10 +227,15 @@ func TestResultCountsOwnCommands(t *testing.T) {
 	}
 }
 
+// command is seq of client, with a payload naming both.
+func command(client, seq uint64) *diempb.Command {
+	return diempb.Command_builder{Client: client, Seq: seq, Payload: fmt.Appendf(nil, "%d-%d", client, seq)}.Build()
+}
+
 // TestSubmitCommitsOnEveryReplica pins that a command submitted to one replica
-// reaches every replica's OnCommit once per Submit, and that its submitter is
-// told once it has committed there. Replica 1 submits the same bytes twice,
-// which are two commands.
+// reaches every replica's OnCommit once, and that its submitter is told once
+// it has committed there. Replica 1 submits one command twice, which shares
+// one Pending and commits once.
 func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 	const n = 4
 	var mu sync.Mutex
@@ -246,7 +251,7 @@ func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 			}
 		}
 	})
-	if _, ok := reps[0].Submit([]byte("early")); ok {
+	if _, ok := reps[0].Submit(command(1, 1)); ok {
 		t.Error("Submit before Started accepted a command")
 	}
 
@@ -255,26 +260,29 @@ func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 	allDone := make(chan struct{})
 	go func() { run(ctx); close(allDone) }()
 
-	want := map[string]int{"twice": 2}
-	var dones []<-chan struct{}
-	submit := func(r *Replica, cmd string) {
-		done, ok := r.Submit([]byte(cmd))
+	want := map[string]int{}
+	var pending []*Pending
+	submit := func(r *Replica, cmd *diempb.Command) {
+		p, ok := r.Submit(cmd)
 		if !ok {
-			t.Fatalf("replica %d: Submit refused %s", r.ID(), cmd)
+			t.Fatalf("replica %d: Submit refused %v", r.ID(), cmd)
 		}
-		dones = append(dones, done)
+		pending = append(pending, p)
+		want[string(cmd.Encode())] = 1
 	}
 	for _, r := range reps {
 		<-r.Started()
-		cmd := fmt.Sprintf("cmd-%d", r.ID())
-		want[cmd] = 1
-		submit(r, cmd)
+		submit(r, command(uint64(r.ID()), 1))
 	}
-	submit(reps[0], "twice")
-	submit(reps[0], "twice")
-	for i, done := range dones {
+	twice := command(9, 1)
+	submit(reps[0], twice)
+	submit(reps[0], twice)
+	if pending[n] != pending[n+1] {
+		t.Error("the same command submitted twice got two Pendings")
+	}
+	for i, p := range pending {
 		select {
-		case <-done:
+		case <-p.Done():
 		case <-time.After(10 * time.Second):
 			t.Fatalf("command %d did not commit", i)
 		}
@@ -283,7 +291,7 @@ func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		for i := range seen {
-			if len(seen[i]) < len(want) || seen[i]["twice"] < 2 {
+			if len(seen[i]) < len(want) {
 				return false
 			}
 		}
@@ -294,7 +302,7 @@ func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 	}
 	cancel()
 	<-allDone
-	if _, ok := reps[0].Submit([]byte("late")); ok {
+	if _, ok := reps[0].Submit(command(1, 2)); ok {
 		t.Error("Submit after Run returned accepted a command")
 	}
 

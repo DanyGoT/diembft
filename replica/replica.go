@@ -25,6 +25,8 @@ const (
 	defaultStartTimeout = 30 * time.Second
 )
 
+var errStopped = errors.New("replica: stopped")
+
 // ErrStartTimeout is what Run returns when the replicas are not all ready
 // within Config.StartTimeout.
 var ErrStartTimeout = errors.New("replica: not every replica was ready before the start timeout")
@@ -72,13 +74,14 @@ type Replica struct {
 
 	// mu serializes every call into the core: inbound messages, fetched
 	// blocks and the round timer. Gorums runs one sender's handlers in order,
-	// and mu serializes them across senders. It also guards commits, commands
-	// and the pool, which the core reaches through the ledger, the transport
-	// and the MemPool.
+	// and mu serializes them across senders. It also guards commits, commands,
+	// the pool and the waiters, which the core reaches through the ledger, the
+	// transport and the MemPool.
 	mu       sync.Mutex
 	commits  []*diempb.Block
 	commands uint64
 	pool     *pool
+	waiters  *waiters
 	stopped  bool // Run has returned
 	onCommit func(*diempb.Block)
 
@@ -139,6 +142,7 @@ func New(cfg Config) (*Replica, error) {
 	r := &Replica{
 		id:           cfg.ID,
 		pool:         &pool{batch: cfg.Batch, size: cfg.PoolSize},
+		waiters:      newWaiters(cfg.PoolSize),
 		onCommit:     cfg.OnCommit,
 		measure:      cfg.Measure,
 		startTimeout: cfg.StartTimeout,
@@ -180,40 +184,34 @@ func (s stamper) Proposal(p *diempb.ProposalMsg) {
 	s.Transport.Proposal(p)
 }
 
-// commit takes each block of chain, oldest first, through commitBlock. It
-// runs inside a core call, so mu is already held.
-func (r *Replica) commit(chain []*diempb.Block, _ *diempb.QuorumCert) {
+// commit appends chain, which qc committed, to the log, oldest first, and
+// tells the clients of its commands. For a block this replica proposed, it
+// records the propose-to-commit latency and its commands' submit-to-commit
+// latency. OnCommit sees every block first, so a client sees its command
+// applied. It runs inside a core call, so mu is already held.
+func (r *Replica) commit(chain []*diempb.Block, qc *diempb.QuorumCert) {
 	for _, b := range chain {
-		r.commitBlock(b)
+		if own, ok := r.pool.committed(b, r.id); ok {
+			r.proposeToCommit += time.Since(own.sent)
+			r.ownCommits++
+			for _, e := range own.entries {
+				r.m.Stats.AddLatency(time.Since(e.submitted))
+			}
+		}
+		r.commits = append(r.commits, b)
+		if r.onCommit != nil {
+			r.onCommit(b)
+		}
 	}
+	r.commands += r.waiters.committed(chain, qc)
 }
 
-// commitBlock appends b to the log and, for a block this replica proposed,
-// records its propose-to-commit latency and its commands' submit-to-commit
-// latency and tells their clients. OnCommit runs first, so a client sees its
-// command applied.
-func (r *Replica) commitBlock(b *diempb.Block) {
-	own, ok := r.pool.committed(b, r.id)
-	if ok {
-		r.proposeToCommit += time.Since(own.sent)
-		r.ownCommits++
-	}
-	r.commits = append(r.commits, b)
-	r.commands += uint64(len(b.GetPayload()))
-	if r.onCommit != nil {
-		r.onCommit(b)
-	}
-	for _, e := range own.entries {
-		r.m.Stats.AddLatency(time.Since(e.submitted))
-		close(e.done)
-	}
-}
-
-// Submit offers a copy of cmd for ordering; done closes once it is committed
-// here. It returns false before Started, after Run has returned, or when
-// PoolSize commands are already waiting. A done still open when Run returns
-// never closes.
-func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
+// Submit offers cmd for this replica to propose. The Pending closes once cmd
+// commits, and the same command submitted again shares it. Submit returns
+// false before Started, after Run has returned, when cmd has already
+// committed, or when PoolSize commands are already waiting. A Pending still
+// open when Run returns never closes.
+func (r *Replica) Submit(cmd *diempb.Command) (*Pending, bool) {
 	select {
 	case <-r.started:
 	default:
@@ -221,10 +219,24 @@ func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	p, err := r.enroll(cmd, true)
+	return p, err == nil
+}
+
+// enroll waits for cmd, and if propose, puts it in the pool the first time.
+func (r *Replica) enroll(cmd *diempb.Command, propose bool) (*Pending, error) {
 	if r.stopped {
-		return nil, false
+		return nil, errStopped
 	}
-	return r.pool.add(slices.Clone(cmd))
+	p, fresh, err := r.waiters.add(cmd)
+	if err != nil || !fresh || !propose {
+		return p, err
+	}
+	if !r.pool.add(cmd.Encode()) {
+		r.waiters.drop(cmd, p)
+		return nil, errFull
+	}
+	return p, nil
 }
 
 // Run serves the transport, waits for every peer, then for every replica to be
@@ -313,7 +325,7 @@ func (r *Replica) ProposeToCommit() time.Duration {
 	return r.proposeToCommit / time.Duration(r.ownCommits)
 }
 
-// Commands is how many commands the committed blocks carried.
+// Commands is how many distinct commands the committed blocks carried.
 func (r *Replica) Commands() uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
