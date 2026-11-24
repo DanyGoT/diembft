@@ -1,6 +1,9 @@
 package diempb
 
-import "slices"
+import (
+	"encoding/binary"
+	"slices"
+)
 
 // Round is the round of the block qc certifies; an absent qc is round 0.
 func (qc *QuorumCert) Round() uint64 { return qc.GetVoteInfo().GetRound() }
@@ -62,4 +65,26 @@ func wellFormed(round, qcRound uint64, tc *TimeoutCert) bool {
 		return tc == nil // the QC alone justifies the round; a TC is irrelevant
 	}
 	return tc != nil && tc.GetRound()+1 == round
+}
+
+// commandHeader is the client and seq that Encode puts before the payload.
+const commandHeader = 16
+
+// Encode is c as a block payload entry: client and seq, big-endian, then the
+// payload. The encoding is fixed, so a client finds its command in a block by
+// comparing bytes.
+func (c *Command) Encode() []byte {
+	b := make([]byte, commandHeader, commandHeader+len(c.GetPayload()))
+	binary.BigEndian.PutUint64(b, c.GetClient())
+	binary.BigEndian.PutUint64(b[8:], c.GetSeq())
+	return append(b, c.GetPayload()...)
+}
+
+// CommandID reads the client and seq back from a block payload entry, or
+// returns false if the entry is too short to be one.
+func CommandID(entry []byte) (client, seq uint64, ok bool) {
+	if len(entry) < commandHeader {
+		return 0, 0, false
+	}
+	return binary.BigEndian.Uint64(entry), binary.BigEndian.Uint64(entry[8:]), true
 }

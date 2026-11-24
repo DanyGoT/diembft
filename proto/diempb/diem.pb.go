@@ -1354,6 +1354,183 @@ func (b0 TimeoutMsg_builder) Build() *TimeoutMsg {
 	return m0
 }
 
+// A client's command. client and seq name it: a client has one command in
+// flight at a time, so a replica that has committed seq for a client drops
+// any command of that client at or below it.
+type Command struct {
+	state              protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Client  uint64                 `protobuf:"varint,1,opt,name=client"`
+	xxx_hidden_Seq     uint64                 `protobuf:"varint,2,opt,name=seq"`
+	xxx_hidden_Payload []byte                 `protobuf:"bytes,3,opt,name=payload"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *Command) Reset() {
+	*x = Command{}
+	mi := &file_proto_diempb_diem_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Command) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Command) ProtoMessage() {}
+
+func (x *Command) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_diempb_diem_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *Command) GetClient() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Client
+	}
+	return 0
+}
+
+func (x *Command) GetSeq() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Seq
+	}
+	return 0
+}
+
+func (x *Command) GetPayload() []byte {
+	if x != nil {
+		return x.xxx_hidden_Payload
+	}
+	return nil
+}
+
+func (x *Command) SetClient(v uint64) {
+	x.xxx_hidden_Client = v
+}
+
+func (x *Command) SetSeq(v uint64) {
+	x.xxx_hidden_Seq = v
+}
+
+func (x *Command) SetPayload(v []byte) {
+	if v == nil {
+		v = []byte{}
+	}
+	x.xxx_hidden_Payload = v
+}
+
+type Command_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Client  uint64
+	Seq     uint64
+	Payload []byte
+}
+
+func (b0 Command_builder) Build() *Command {
+	m0 := &Command{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Client = b.Client
+	x.xxx_hidden_Seq = b.Seq
+	x.xxx_hidden_Payload = b.Payload
+	return m0
+}
+
+// CommitProof shows that blocks[0] committed. The blocks run oldest first,
+// each the parent of the next, and qc commits the last one.
+type CommitProof struct {
+	state             protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Blocks *[]*Block              `protobuf:"bytes,1,rep,name=blocks"`
+	xxx_hidden_Qc     *QuorumCert            `protobuf:"bytes,2,opt,name=qc"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *CommitProof) Reset() {
+	*x = CommitProof{}
+	mi := &file_proto_diempb_diem_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommitProof) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommitProof) ProtoMessage() {}
+
+func (x *CommitProof) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_diempb_diem_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *CommitProof) GetBlocks() []*Block {
+	if x != nil {
+		if x.xxx_hidden_Blocks != nil {
+			return *x.xxx_hidden_Blocks
+		}
+	}
+	return nil
+}
+
+func (x *CommitProof) GetQc() *QuorumCert {
+	if x != nil {
+		return x.xxx_hidden_Qc
+	}
+	return nil
+}
+
+func (x *CommitProof) SetBlocks(v []*Block) {
+	x.xxx_hidden_Blocks = &v
+}
+
+func (x *CommitProof) SetQc(v *QuorumCert) {
+	x.xxx_hidden_Qc = v
+}
+
+func (x *CommitProof) HasQc() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Qc != nil
+}
+
+func (x *CommitProof) ClearQc() {
+	x.xxx_hidden_Qc = nil
+}
+
+type CommitProof_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Blocks []*Block
+	Qc     *QuorumCert
+}
+
+func (b0 CommitProof_builder) Build() *CommitProof {
+	m0 := &CommitProof{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Blocks = &b.Blocks
+	x.xxx_hidden_Qc = b.Qc
+	return m0
+}
+
 var File_proto_diempb_diem_proto protoreflect.FileDescriptor
 
 const file_proto_diempb_diem_proto_rawDesc = "" +
@@ -1416,15 +1593,25 @@ const file_proto_diempb_diem_proto_rawDesc = "" +
 	"TimeoutMsg\x12.\n" +
 	"\btmo_info\x18\x01 \x01(\v2\x13.diempb.TimeoutInfoR\atmoInfo\x127\n" +
 	"\rlast_round_tc\x18\x02 \x01(\v2\x13.diempb.TimeoutCertR\vlastRoundTc\x128\n" +
-	"\x0ehigh_commit_qc\x18\x03 \x01(\v2\x12.diempb.QuorumCertR\fhighCommitQc2\xb0\x02\n" +
+	"\x0ehigh_commit_qc\x18\x03 \x01(\v2\x12.diempb.QuorumCertR\fhighCommitQc\"M\n" +
+	"\aCommand\x12\x16\n" +
+	"\x06client\x18\x01 \x01(\x04R\x06client\x12\x10\n" +
+	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12\x18\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"X\n" +
+	"\vCommitProof\x12%\n" +
+	"\x06blocks\x18\x01 \x03(\v2\r.diempb.BlockR\x06blocks\x12\"\n" +
+	"\x02qc\x18\x02 \x01(\v2\x12.diempb.QuorumCertR\x02qc2\xb0\x02\n" +
 	"\x04Diem\x12=\n" +
 	"\bProposal\x12\x13.diempb.ProposalMsg\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x125\n" +
 	"\x04Vote\x12\x0f.diempb.VoteMsg\x1a\x16.google.protobuf.Empty\"\x04\x90\xb5\x18\x01\x12;\n" +
 	"\aTimeout\x12\x12.diempb.TimeoutMsg\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x126\n" +
 	"\fRequestBlock\x12\x11.diempb.BlockHash\x1a\r.diempb.Block\"\x04\xa0\xb5\x18\x01\x12=\n" +
-	"\x05Ready\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\x04\xa0\xb5\x18\x01B.Z'github.com/DanyGoT/diembft/proto/diempb\x92\x03\x02\b\x02b\beditionsp\xe9\a"
+	"\x05Ready\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\x04\xa0\xb5\x18\x012|\n" +
+	"\x06Client\x124\n" +
+	"\x06Submit\x12\x0f.diempb.Command\x1a\x13.diempb.CommitProof\"\x04\xa0\xb5\x18\x01\x12<\n" +
+	"\x04Ping\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\x04\xa0\xb5\x18\x01B.Z'github.com/DanyGoT/diembft/proto/diempb\x92\x03\x02\b\x02b\beditionsp\xe9\a"
 
-var file_proto_diempb_diem_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_proto_diempb_diem_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_proto_diempb_diem_proto_goTypes = []any{
 	(*Signature)(nil),        // 0: diempb.Signature
 	(*VoteInfo)(nil),         // 1: diempb.VoteInfo
@@ -1438,7 +1625,9 @@ var file_proto_diempb_diem_proto_goTypes = []any{
 	(*TimeoutInfo)(nil),      // 9: diempb.TimeoutInfo
 	(*BlockHash)(nil),        // 10: diempb.BlockHash
 	(*TimeoutMsg)(nil),       // 11: diempb.TimeoutMsg
-	(*emptypb.Empty)(nil),    // 12: google.protobuf.Empty
+	(*Command)(nil),          // 12: diempb.Command
+	(*CommitProof)(nil),      // 13: diempb.CommitProof
+	(*emptypb.Empty)(nil),    // 14: google.protobuf.Empty
 }
 var file_proto_diempb_diem_proto_depIdxs = []int32{
 	1,  // 0: diempb.QuorumCert.vote_info:type_name -> diempb.VoteInfo
@@ -1461,21 +1650,27 @@ var file_proto_diempb_diem_proto_depIdxs = []int32{
 	9,  // 17: diempb.TimeoutMsg.tmo_info:type_name -> diempb.TimeoutInfo
 	5,  // 18: diempb.TimeoutMsg.last_round_tc:type_name -> diempb.TimeoutCert
 	3,  // 19: diempb.TimeoutMsg.high_commit_qc:type_name -> diempb.QuorumCert
-	7,  // 20: diempb.Diem.Proposal:input_type -> diempb.ProposalMsg
-	8,  // 21: diempb.Diem.Vote:input_type -> diempb.VoteMsg
-	11, // 22: diempb.Diem.Timeout:input_type -> diempb.TimeoutMsg
-	10, // 23: diempb.Diem.RequestBlock:input_type -> diempb.BlockHash
-	12, // 24: diempb.Diem.Ready:input_type -> google.protobuf.Empty
-	12, // 25: diempb.Diem.Proposal:output_type -> google.protobuf.Empty
-	12, // 26: diempb.Diem.Vote:output_type -> google.protobuf.Empty
-	12, // 27: diempb.Diem.Timeout:output_type -> google.protobuf.Empty
-	6,  // 28: diempb.Diem.RequestBlock:output_type -> diempb.Block
-	12, // 29: diempb.Diem.Ready:output_type -> google.protobuf.Empty
-	25, // [25:30] is the sub-list for method output_type
-	20, // [20:25] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	6,  // 20: diempb.CommitProof.blocks:type_name -> diempb.Block
+	3,  // 21: diempb.CommitProof.qc:type_name -> diempb.QuorumCert
+	7,  // 22: diempb.Diem.Proposal:input_type -> diempb.ProposalMsg
+	8,  // 23: diempb.Diem.Vote:input_type -> diempb.VoteMsg
+	11, // 24: diempb.Diem.Timeout:input_type -> diempb.TimeoutMsg
+	10, // 25: diempb.Diem.RequestBlock:input_type -> diempb.BlockHash
+	14, // 26: diempb.Diem.Ready:input_type -> google.protobuf.Empty
+	12, // 27: diempb.Client.Submit:input_type -> diempb.Command
+	14, // 28: diempb.Client.Ping:input_type -> google.protobuf.Empty
+	14, // 29: diempb.Diem.Proposal:output_type -> google.protobuf.Empty
+	14, // 30: diempb.Diem.Vote:output_type -> google.protobuf.Empty
+	14, // 31: diempb.Diem.Timeout:output_type -> google.protobuf.Empty
+	6,  // 32: diempb.Diem.RequestBlock:output_type -> diempb.Block
+	14, // 33: diempb.Diem.Ready:output_type -> google.protobuf.Empty
+	13, // 34: diempb.Client.Submit:output_type -> diempb.CommitProof
+	14, // 35: diempb.Client.Ping:output_type -> google.protobuf.Empty
+	29, // [29:36] is the sub-list for method output_type
+	22, // [22:29] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_proto_diempb_diem_proto_init() }
@@ -1489,9 +1684,9 @@ func file_proto_diempb_diem_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_diempb_diem_proto_rawDesc), len(file_proto_diempb_diem_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   14,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_proto_diempb_diem_proto_goTypes,
 		DependencyIndexes: file_proto_diempb_diem_proto_depIdxs,

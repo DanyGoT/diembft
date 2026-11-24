@@ -30,8 +30,7 @@ var _ emptypb.Empty
 //
 // GORUMS: an RPC name must never equal a message name, or the generated client
 // function collides with the generated type — hence ProposalMsg, not Proposal.
-// Only one service is allowed per .proto file, and Config, Node, NodeContext
-// and ConfigContext are reserved message names.
+// Config, Node, NodeContext and ConfigContext are reserved message names.
 type DiemClient interface {
 	// Proposal returns a one-way call handle for the client's configuration.
 	// No reply is returned. Use gorums.MapRequest to send a different message to
@@ -98,8 +97,7 @@ type diemClient struct {
 //
 // GORUMS: an RPC name must never equal a message name, or the generated client
 // function collides with the generated type — hence ProposalMsg, not Proposal.
-// Only one service is allowed per .proto file, and Config, Node, NodeContext
-// and ConfigContext are reserved message names.
+// Config, Node, NodeContext and ConfigContext are reserved message names.
 type DiemNodeClient interface {
 	// Unicast: DiemBFT 3.1 sends a vote to the leader of the next round alone,
 	// because that leader is the only replica that will propose over the
@@ -127,6 +125,36 @@ type diemNodeClient struct {
 	node *Node
 }
 
+// ClientClient is the client API for Client quorum calls and
+// multicasts on the client's configuration. If the configuration is empty, no
+// message is sent and the call fails with [gorums.ErrEmptyConfig].
+//
+// The client-facing service. A client calls every replica and keeps the first
+// reply whose proof checks out, so it trusts no single replica.
+type ClientClient interface {
+	// Submit returns a quorum-call handle for the client's configuration.
+	// A terminal method such as Majority(), First(), or Threshold(n) dispatches
+	// the call and retrieves the aggregated result.
+	//
+	// Example:
+	//
+	//	resp, err := client.Submit(ctx, in).Majority()
+	Submit(ctx context.Context, in *Command) *gorums.Call[*Command, *CommitProof]
+
+	// An empty round trip, the network floor under Submit.
+	Ping(ctx context.Context, in *emptypb.Empty) *gorums.Call[*emptypb.Empty, *emptypb.Empty]
+}
+
+// NewClientClient returns a client whose calls execute on config.
+func NewClientClient(config Config) ClientClient {
+	return clientClient{config: config}
+}
+
+// clientClient implements ClientClient.
+type clientClient struct {
+	config Config
+}
+
 func (c diemClient) Proposal(ctx context.Context, in *ProposalMsg) *gorums.OnewayCall[*ProposalMsg] {
 	return gorumsimpl.Multicast(ctx, c.config, in, "diempb.Diem.Proposal")
 }
@@ -147,18 +175,34 @@ func (c diemClient) Ready(ctx context.Context, in *emptypb.Empty) *gorums.Call[*
 	return gorumsimpl.QuorumCall[*emptypb.Empty, *emptypb.Empty](ctx, c.config, in, "diempb.Diem.Ready")
 }
 
+func (c clientClient) Submit(ctx context.Context, in *Command) *gorums.Call[*Command, *CommitProof] {
+	return gorumsimpl.QuorumCall[*Command, *CommitProof](ctx, c.config, in, "diempb.Client.Submit")
+}
+
+func (c clientClient) Ping(ctx context.Context, in *emptypb.Empty) *gorums.Call[*emptypb.Empty, *emptypb.Empty] {
+	return gorumsimpl.QuorumCall[*emptypb.Empty, *emptypb.Empty](ctx, c.config, in, "diempb.Client.Ping")
+}
+
 // DiemServer is the server API for Diem.
 //
 // GORUMS: an RPC name must never equal a message name, or the generated client
 // function collides with the generated type — hence ProposalMsg, not Proposal.
-// Only one service is allowed per .proto file, and Config, Node, NodeContext
-// and ConfigContext are reserved message names.
+// Config, Node, NodeContext and ConfigContext are reserved message names.
 type DiemServer interface {
 	Proposal(gorums.ServerContext, *ProposalMsg)
 	Vote(gorums.ServerContext, *VoteMsg)
 	Timeout(gorums.ServerContext, *TimeoutMsg)
 	RequestBlock(gorums.ServerContext, *BlockHash) (*Block, error)
 	Ready(gorums.ServerContext, *emptypb.Empty) (*emptypb.Empty, error)
+}
+
+// ClientServer is the server API for Client.
+//
+// The client-facing service. A client calls every replica and keeps the first
+// reply whose proof checks out, so it trusts no single replica.
+type ClientServer interface {
+	Submit(gorums.ServerContext, *Command) (*CommitProof, error)
+	Ping(gorums.ServerContext, *emptypb.Empty) (*emptypb.Empty, error)
 }
 
 func RegisterDiemServer(srv *gorums.Server, impl DiemServer) {
@@ -189,6 +233,27 @@ func RegisterDiemServer(srv *gorums.Server, impl DiemServer) {
 	srv.RegisterHandler("diempb.Diem.Ready", func(ctx gorums.ServerContext, in *gorums.Message, send func(proto.Message)) error {
 		req := gorums.AsProto[*emptypb.Empty](in)
 		resp, err := impl.Ready(ctx, req)
+		if err != nil {
+			return err
+		}
+		send(resp)
+		return nil
+	})
+}
+
+func RegisterClientServer(srv *gorums.Server, impl ClientServer) {
+	srv.RegisterHandler("diempb.Client.Submit", func(ctx gorums.ServerContext, in *gorums.Message, send func(proto.Message)) error {
+		req := gorums.AsProto[*Command](in)
+		resp, err := impl.Submit(ctx, req)
+		if err != nil {
+			return err
+		}
+		send(resp)
+		return nil
+	})
+	srv.RegisterHandler("diempb.Client.Ping", func(ctx gorums.ServerContext, in *gorums.Message, send func(proto.Message)) error {
+		req := gorums.AsProto[*emptypb.Empty](in)
+		resp, err := impl.Ping(ctx, req)
 		if err != nil {
 			return err
 		}
