@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -963,5 +964,29 @@ func TestClusterCommitsOverGorums(t *testing.T) {
 		if got := nd.core.State().DeclinedMissingAncestor; got != 0 {
 			t.Logf("replica %d declined %d votes for a missing ancestor, lost while it was fetched", i+1, got)
 		}
+	}
+}
+
+// TestClientReadyWaitsForReplicas pins that Ready keeps asking until every
+// replica answers, here one whose server starts only after the client dialed.
+func TestClientReadyWaitsForReplicas(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Dial(map[uint32]string{1: l.Addr().String()}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	srv := gorums.NewServer()
+	diempb.RegisterClientServer(srv, clientHandler{})
+	t.Cleanup(srv.Stop)
+	time.AfterFunc(200*time.Millisecond, func() { _ = srv.Serve(l) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), recvTimeout)
+	defer cancel()
+	if err := c.Ready(ctx); err != nil {
+		t.Fatalf("Ready = %v, want it to wait for the replica", err)
 	}
 }

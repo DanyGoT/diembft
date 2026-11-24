@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"time"
 
 	"github.com/DanyGoT/diembft/diem"
 	"github.com/DanyGoT/diembft/proto/diempb"
@@ -54,6 +55,22 @@ func (c *Client) Submit(ctx context.Context, cmd *diempb.Command) (*diempb.Commi
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.client.Ping(ctx, &emptypb.Empty{}).First()
 	return err
+}
+
+// Ready blocks until every replica answers a Ping, or ctx is done, so that a
+// run starts with every connection up, as Barrier does for the replicas.
+func (c *Client) Ready(ctx context.Context) error {
+	for {
+		_, err := c.client.Ping(ctx, &emptypb.Empty{}).All()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(barrierRetry):
+		}
+	}
 }
 
 // Close closes the connections.
