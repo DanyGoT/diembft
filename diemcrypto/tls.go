@@ -63,7 +63,8 @@ func Certificates(privs map[uint32]*ecdsa.PrivateKey) (map[uint32][]byte, error)
 // presents one of certs. A client may connect without a certificate: Gorums
 // refuses a stream that claims a replica's ID without that replica's
 // certificate, and one that claims none can send no protocol message, since
-// each must name its sender.
+// each must name its sender. It can still call RequestBlock and Ready, which
+// name no sender and only read.
 func TLSConfig(id uint32, key *ecdsa.PrivateKey, certs map[uint32][]byte) (*tls.Config, error) {
 	if certs[id] == nil {
 		return nil, fmt.Errorf("no certificate for replica %d", id)
