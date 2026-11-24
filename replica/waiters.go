@@ -20,7 +20,7 @@ type Pending struct {
 	pooled bool // in this replica's pool, which keeps it until it commits
 }
 
-func (p *Pending) Done() <-chan struct{}       { return p.done }
+func (p *Pending) Done() <-chan struct{}      { return p.done }
 func (p *Pending) Proof() *diempb.CommitProof { return p.proof }
 
 type cmdKey struct{ client, seq uint64 }
