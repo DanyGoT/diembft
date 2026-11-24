@@ -19,10 +19,11 @@ type MemLedger struct {
 	// whole assumption DiemBFT's execution certification rests on.
 	Execute func(prev []byte, payload [][]byte) []byte
 
-	// OnCommit, if set, runs once per block in commit order. It is where a
-	// replicated application consumes the chain; the paper leaves it to the
-	// "higher level logic" the Ledger module is the gateway for.
-	OnCommit func(*diempb.Block)
+	// OnCommit, if set, runs once per commit with the blocks it exported,
+	// oldest first, and the certificate that committed the last of them. It is
+	// where a replicated application consumes the chain; the paper leaves it to
+	// the "higher level logic" the Ledger module is the gateway for.
+	OnCommit func(chain []*diempb.Block, qc *diempb.QuorumCert)
 
 	// History bounds the committed blocks kept for peers that fetch a block
 	// they missed. A persistent ledger store would keep them all; this one is
@@ -132,9 +133,10 @@ func (l *MemLedger) PendingState(blockID []byte) ([]byte, bool) {
 	return s.state, ok
 }
 
-// Commit exports the pending prefix ending at blockID and discards the
-// branches forking below it.
-func (l *MemLedger) Commit(blockID []byte) {
+// Commit exports the pending prefix ending at the block qc commits, its
+// vote's parent, and discards the branches forking below it.
+func (l *MemLedger) Commit(qc *diempb.QuorumCert) {
+	blockID := qc.GetVoteInfo().GetParentId()
 	if string(blockID) == l.commitID {
 		return // already committed; the common case, since every QC re-commits
 	}
@@ -149,15 +151,17 @@ func (l *MemLedger) Commit(blockID []byte) {
 		chain = append(chain, s)
 		id = string(s.block.ParentID())
 	}
-	for _, s := range slices.Backward(chain) {
+	blocks := make([]*diempb.Block, len(chain))
+	for i, s := range slices.Backward(chain) {
 		id := string(s.block.GetId())
 		delete(l.pending, id)
 		l.committed[id] = s.block
 		l.order = append(l.order, id)
 		l.commitID, l.commitState = id, s.state
-		if l.OnCommit != nil {
-			l.OnCommit(s.block)
-		}
+		blocks[len(chain)-1-i] = s.block
+	}
+	if l.OnCommit != nil {
+		l.OnCommit(blocks, qc)
 	}
 	l.prune()
 	l.forget()

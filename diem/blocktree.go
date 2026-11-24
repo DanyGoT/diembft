@@ -89,7 +89,7 @@ func (t *BlockTree) ProcessQC(qc *diempb.QuorumCert) {
 	}
 	if qc.GetLedgerCommitInfo().Commits() {
 		vi := qc.GetVoteInfo()
-		t.ledger.Commit(vi.GetParentId())
+		t.ledger.Commit(qc)
 		t.prune(vi.GetParentId(), vi.GetParentRound())
 		t.highCommitQC = qc.Higher(t.highCommitQC)
 	}

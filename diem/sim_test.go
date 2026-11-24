@@ -66,7 +66,7 @@ func newSim(t *testing.T, n int, down ...uint32) *sim {
 	}
 	for _, id := range s.ids {
 		ledger := NewMemLedger()
-		ledger.OnCommit = func(b *diempb.Block) { s.commits[id] = append(s.commits[id], b) }
+		ledger.OnCommit = func(chain []*diempb.Block, _ *diempb.QuorumCert) { s.commits[id] = append(s.commits[id], chain...) }
 		pool := &fifoPool{batch: 2}
 		s.pools[id] = pool
 		s.vers[id] = NewVerifier(newTestSigner(n), QuorumSize(n))
