@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"slices"
 	"sync"
 
 	"github.com/DanyGoT/diembft/proto/diempb"
@@ -262,4 +263,28 @@ func (v *Verifier) verifyCommitQC(qc, checked *diempb.QuorumCert) bool {
 // signed.
 func (v *Verifier) VerifyBlock(b *diempb.Block, id []byte) bool {
 	return bytes.Equal(b.GetId(), id) && b.ValidID() && v.VerifyQC(b.GetQc())
+}
+
+// VerifyCommit reports whether proof shows that cmd, an encoded command,
+// committed. Every block's id is recomputed, each block is the parent of the
+// next, and the first carries cmd. The certificate must commit the last block:
+// its vote's parent is that block, at that block's round. VerifyQC then checks
+// the quorum's signatures and that the vote's round directly follows its
+// parent's, the 2-chain a commit needs (DiemBFT v4 3.4, make_vote). The blocks
+// below the last may skip rounds, as they do after a timeout.
+func (v *Verifier) VerifyCommit(proof *diempb.CommitProof, cmd []byte) bool {
+	blocks := proof.GetBlocks()
+	if len(blocks) == 0 || !slices.ContainsFunc(blocks[0].GetPayload(), func(e []byte) bool { return bytes.Equal(e, cmd) }) {
+		return false
+	}
+	for i, b := range blocks {
+		if !b.ValidID() || i > 0 && !bytes.Equal(b.ParentID(), blocks[i-1].GetId()) {
+			return false
+		}
+	}
+	top, qc := blocks[len(blocks)-1], proof.GetQc()
+	vi := qc.GetVoteInfo()
+	return qc.GetLedgerCommitInfo().Commits() &&
+		bytes.Equal(vi.GetParentId(), top.GetId()) && vi.GetParentRound() == top.GetRound() &&
+		v.VerifyQC(qc)
 }
