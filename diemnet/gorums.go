@@ -20,11 +20,16 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // fetchTimeout bounds one block request. A peer that holds the block answers
 // at once, so the bound only matters when none does.
 const fetchTimeout = time.Second
+
+// barrierRetry paces a Barrier whose call a peer failed, for example because
+// its server stopped.
+const barrierRetry = 50 * time.Millisecond
 
 // Config is what the transport and its inbound handlers need.
 type Config struct {
@@ -148,6 +153,7 @@ type Transport struct {
 	peers    gorums.Config
 	client   diempb.DiemClient
 	handler  *handler
+	ready    func() // tells the handler to answer Ready
 	ver      *diem.Verifier
 	rejected *atomic.Uint64
 
@@ -188,11 +194,13 @@ func New(cfg Config) *Transport {
 		drops[id] = new(atomic.Uint64)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
 	return &Transport{
 		srv:      srv,
 		peers:    peers,
 		client:   diempb.NewDiemClient(peers),
-		handler:  &handler{},
+		handler:  &handler{ready: ready},
+		ready:    sync.OnceFunc(func() { close(ready) }),
 		ver:      cfg.Verifier,
 		rejected: cfg.Rejected,
 		ctx:      ctx,
@@ -231,6 +239,25 @@ func (t *Transport) Stop() {
 func (t *Transport) WaitForPeers(ctx context.Context) error {
 	want := t.peers.Size()
 	return t.srv.WaitForPeers(ctx, func(c gorums.Config) bool { return c.Size() >= want })
+}
+
+// Barrier blocks until every replica has said it is ready, or ctx is done.
+// Calling it says this replica is ready, so call it after WaitForPeers. Every
+// replica then leaves the barrier within about one round trip of the others,
+// whatever each one waited for its own peers.
+func (t *Transport) Barrier(ctx context.Context) error {
+	t.ready()
+	for {
+		_, err := t.client.Ready(ctx, &emptypb.Empty{}).All()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(barrierRetry):
+		}
+	}
 }
 
 func (t *Transport) Proposal(p *diempb.ProposalMsg) {

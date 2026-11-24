@@ -343,35 +343,127 @@ func TestStartedWaitsForPeers(t *testing.T) {
 	<-allDone
 }
 
-// stallStreams makes every stream stop sending, as it does when the peer stops
-// reading, until the stream closes.
-var stallStreams = gorums.WithGRPCDialOptions(grpc.WithStreamInterceptor(
-	func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-		cs, err := streamer(ctx, desc, cc, method, opts...)
+// TestStartWaitsForEveryReplica holds replica 1's streams to its peers, so
+// replicas 2-4 have every peer connected and replica 1 has none. No replica may
+// start while the streams are held, and every one starts once they are let go.
+func TestStartWaitsForEveryReplica(t *testing.T) {
+	const n = 4
+	privs, pubs, err := diemcrypto.GenerateKeys(n)
+	if err != nil {
+		t.Fatalf("GenerateKeys: %v", err)
+	}
+	peers := make(map[uint32]string, n)
+	for id := uint32(1); id <= n; id++ {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			return nil, err
+			t.Fatal(err)
 		}
-		return stalled{cs}, nil
-	}))
+		peers[id] = l.Addr().String()
+		if err := l.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := make(chan struct{})
+	hold := gorums.WithGRPCDialOptions(grpc.WithStreamInterceptor(
+		func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return streamer(ctx, desc, cc, method, opts...)
+		}))
 
-type stalled struct{ grpc.ClientStream }
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	t.Cleanup(func() { cancel(); wg.Wait() })
+	reps := make([]*Replica, n)
+	for i := range reps {
+		id := uint32(i + 1)
+		cfg := Config{ID: id, Key: privs[id], Keys: pubs, RoundTimeout: testRound, Listen: peers[id], Peers: peers}
+		if id == 1 {
+			cfg.DialOptions = []gorums.DialOption{hold}
+		}
+		reps[i] = New(cfg)
+		wg.Go(func() { _ = reps[i].Run(ctx) })
+	}
 
-func (s stalled) SendMsg(any) error {
+	started := func() bool {
+		for _, r := range reps {
+			select {
+			case <-r.Started():
+				return true
+			default:
+			}
+		}
+		return false
+	}
+	if waitFor(300*time.Millisecond, started) {
+		for _, r := range reps {
+			select {
+			case <-r.Started():
+				t.Errorf("replica %d started while replica 1 reached no peer", r.ID())
+			default:
+			}
+		}
+	}
+	close(release)
+	for _, r := range reps {
+		select {
+		case <-r.Started():
+		case <-time.After(10 * time.Second):
+			t.Fatalf("replica %d: Started not closed once every stream was let go", r.ID())
+		}
+	}
+}
+
+// stallStreams makes every stream stop sending once stall is set, as it does
+// when the peer stops reading, until the stream closes.
+func stallStreams(stall *atomic.Bool) gorums.DialOption {
+	return gorums.WithGRPCDialOptions(grpc.WithStreamInterceptor(
+		func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			cs, err := streamer(ctx, desc, cc, method, opts...)
+			if err != nil {
+				return nil, err
+			}
+			return stalled{cs, stall}, nil
+		}))
+}
+
+type stalled struct {
+	grpc.ClientStream
+	stall *atomic.Bool
+}
+
+func (s stalled) SendMsg(m any) error {
+	if !s.stall.Load() {
+		return s.ClientStream.SendMsg(m)
+	}
 	<-s.Context().Done()
 	return s.Context().Err()
 }
 
 // TestStalledPeersDropInsteadOfBlocking stalls every stream behind a one-slot
-// send queue. Each replica's round timer must keep firing, so its sends fill
-// the queues and are counted as drops instead of blocking the core with mu
-// held, and cancelling must still stop every replica.
+// send queue once the replicas have started. Each replica's round timer must
+// keep firing, so its sends fill the queues and are counted as drops instead
+// of blocking the core with mu held, and cancelling must still stop every
+// replica.
 func TestStalledPeersDropInsteadOfBlocking(t *testing.T) {
-	reps, run := cluster(t, 4, testRound, nil, gorums.WithDialBufferSizes(0, 1), stallStreams)
+	stall := new(atomic.Bool)
+	reps, run := cluster(t, 4, testRound, nil, gorums.WithDialBufferSizes(0, 1), stallStreams(stall))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	allDone := make(chan struct{})
 	go func() { run(ctx); close(allDone) }()
+	for _, r := range reps {
+		select {
+		case <-r.Started():
+		case <-time.After(10 * time.Second):
+			t.Fatalf("replica %d: Started not closed", r.ID())
+		}
+	}
+	stall.Store(true)
 
 	dropping := func() bool {
 		for _, r := range reps {

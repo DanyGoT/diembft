@@ -1416,12 +1416,13 @@ const file_proto_diempb_diem_proto_rawDesc = "" +
 	"TimeoutMsg\x12.\n" +
 	"\btmo_info\x18\x01 \x01(\v2\x13.diempb.TimeoutInfoR\atmoInfo\x127\n" +
 	"\rlast_round_tc\x18\x02 \x01(\v2\x13.diempb.TimeoutCertR\vlastRoundTc\x128\n" +
-	"\x0ehigh_commit_qc\x18\x03 \x01(\v2\x12.diempb.QuorumCertR\fhighCommitQc2\xf1\x01\n" +
+	"\x0ehigh_commit_qc\x18\x03 \x01(\v2\x12.diempb.QuorumCertR\fhighCommitQc2\xb0\x02\n" +
 	"\x04Diem\x12=\n" +
 	"\bProposal\x12\x13.diempb.ProposalMsg\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x125\n" +
 	"\x04Vote\x12\x0f.diempb.VoteMsg\x1a\x16.google.protobuf.Empty\"\x04\x90\xb5\x18\x01\x12;\n" +
 	"\aTimeout\x12\x12.diempb.TimeoutMsg\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x126\n" +
-	"\fRequestBlock\x12\x11.diempb.BlockHash\x1a\r.diempb.Block\"\x04\xa0\xb5\x18\x01B.Z'github.com/DanyGoT/diembft/proto/diempb\x92\x03\x02\b\x02b\beditionsp\xe9\a"
+	"\fRequestBlock\x12\x11.diempb.BlockHash\x1a\r.diempb.Block\"\x04\xa0\xb5\x18\x01\x12=\n" +
+	"\x05Ready\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\x04\xa0\xb5\x18\x01B.Z'github.com/DanyGoT/diembft/proto/diempb\x92\x03\x02\b\x02b\beditionsp\xe9\a"
 
 var file_proto_diempb_diem_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_diempb_diem_proto_goTypes = []any{
@@ -1464,12 +1465,14 @@ var file_proto_diempb_diem_proto_depIdxs = []int32{
 	8,  // 21: diempb.Diem.Vote:input_type -> diempb.VoteMsg
 	11, // 22: diempb.Diem.Timeout:input_type -> diempb.TimeoutMsg
 	10, // 23: diempb.Diem.RequestBlock:input_type -> diempb.BlockHash
-	12, // 24: diempb.Diem.Proposal:output_type -> google.protobuf.Empty
-	12, // 25: diempb.Diem.Vote:output_type -> google.protobuf.Empty
-	12, // 26: diempb.Diem.Timeout:output_type -> google.protobuf.Empty
-	6,  // 27: diempb.Diem.RequestBlock:output_type -> diempb.Block
-	24, // [24:28] is the sub-list for method output_type
-	20, // [20:24] is the sub-list for method input_type
+	12, // 24: diempb.Diem.Ready:input_type -> google.protobuf.Empty
+	12, // 25: diempb.Diem.Proposal:output_type -> google.protobuf.Empty
+	12, // 26: diempb.Diem.Vote:output_type -> google.protobuf.Empty
+	12, // 27: diempb.Diem.Timeout:output_type -> google.protobuf.Empty
+	6,  // 28: diempb.Diem.RequestBlock:output_type -> diempb.Block
+	12, // 29: diempb.Diem.Ready:output_type -> google.protobuf.Empty
+	25, // [25:30] is the sub-list for method output_type
+	20, // [20:25] is the sub-list for method input_type
 	20, // [20:20] is the sub-list for extension type_name
 	20, // [20:20] is the sub-list for extension extendee
 	0,  // [0:20] is the sub-list for field type_name

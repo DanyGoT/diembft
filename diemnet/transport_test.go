@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 const recvTimeout = 5 * time.Second
@@ -67,6 +68,10 @@ type recorder struct {
 func (r *recorder) Proposal(_ gorums.ServerContext, in *diempb.ProposalMsg) { r.q <- in }
 func (r *recorder) Vote(_ gorums.ServerContext, in *diempb.VoteMsg)         { r.q <- in }
 func (r *recorder) Timeout(_ gorums.ServerContext, in *diempb.TimeoutMsg)   { r.q <- in }
+
+func (r *recorder) Ready(gorums.ServerContext, *emptypb.Empty) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
 
 func (r *recorder) RequestBlock(gorums.ServerContext, *diempb.BlockHash) (*diempb.Block, error) {
 	if r.held == nil {

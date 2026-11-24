@@ -127,4 +127,12 @@ service Diem {
   rpc RequestBlock(BlockHash) returns (Block) {
     option (gorums.quorumcall) = true;
   }
+
+  // The start barrier. A replica answers once its own peers are connected,
+  // so a call that every replica answered means every replica can reach all
+  // the others. A quorum call rather than a multicast: a pending call is sent
+  // again when its stream comes back, a one-way message is lost.
+  rpc Ready(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    option (gorums.quorumcall) = true;
+  }
 }
