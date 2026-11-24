@@ -100,3 +100,36 @@ func TestWaitersBounded(t *testing.T) {
 	w.drop(a, p)
 	mustAdd(t, w, command(2, 1))
 }
+
+// TestWaitersSharedUntilLastDrop pins that a Pending two callers share stays
+// until both give up: the first to time out must not strand the other.
+func TestWaitersSharedUntilLastDrop(t *testing.T) {
+	w := newWaiters(8)
+	a := command(1, 1)
+	p := mustAdd(t, w, a)
+	mustAdd(t, w, a)
+	w.drop(a, p)
+	w.committed([]*diempb.Block{carrying(3, a)}, nil)
+	if !closed(p) {
+		t.Fatal("the remaining caller was not told its command committed")
+	}
+}
+
+// TestTimedOutCommandPooledOnce pins that a command whose callers all gave up
+// stays held while the pool has it, so the same command submitted again, as a
+// replayed call, does not enter the pool a second time.
+func TestTimedOutCommandPooledOnce(t *testing.T) {
+	r := &Replica{waiters: newWaiters(8), pool: &pool{batch: 8, size: 8}}
+	a := command(1, 1)
+	p, err := r.enroll(a, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.waiters.drop(a, p)
+	if again, err := r.enroll(a, true); err != nil || again != p {
+		t.Errorf("enroll again = %p, %v; want the first Pending", again, err)
+	}
+	if r.pool.held != 1 {
+		t.Errorf("pool holds %d commands, want 1", r.pool.held)
+	}
+}

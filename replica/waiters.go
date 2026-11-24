@@ -14,8 +14,10 @@ var (
 // Pending is a submitted command. Done closes once it commits, and Proof is
 // then the proof.
 type Pending struct {
-	done  chan struct{}
-	proof *diempb.CommitProof
+	done   chan struct{}
+	proof  *diempb.CommitProof
+	refs   int  // the callers waiting on it
+	pooled bool // in this replica's pool, which keeps it until it commits
 }
 
 func (p *Pending) Done() <-chan struct{}       { return p.done }
@@ -39,8 +41,8 @@ func newWaiters(size int) *waiters {
 	return &waiters{size: size, pending: map[cmdKey]*Pending{}, last: map[uint64]uint64{}}
 }
 
-// add returns the Pending for cmd, and fresh if no one was waiting for it
-// already. It refuses a command at or below its client's last committed seq,
+// add returns the Pending for cmd, and fresh if it was not held already. It
+// refuses a command at or below its client's last committed seq,
 // seq 0 included, and a new one when size commands are waiting.
 func (w *waiters) add(cmd *diempb.Command) (p *Pending, fresh bool, err error) {
 	if cmd.GetSeq() <= w.last[cmd.GetClient()] {
@@ -48,20 +50,24 @@ func (w *waiters) add(cmd *diempb.Command) (p *Pending, fresh bool, err error) {
 	}
 	k := cmdKey{cmd.GetClient(), cmd.GetSeq()}
 	if p := w.pending[k]; p != nil {
+		p.refs++
 		return p, false, nil
 	}
 	if len(w.pending) >= w.size {
 		return nil, false, errFull
 	}
-	p = &Pending{done: make(chan struct{})}
+	p = &Pending{done: make(chan struct{}), refs: 1}
 	w.pending[k] = p
 	return p, true, nil
 }
 
-// drop stops waiting for cmd, unless someone else waits on it by now.
+// drop is one caller giving up on cmd. Its Pending goes once no one waits on
+// it, unless the pool holds cmd: the Pending then stays until cmd commits, so
+// cmd submitted again joins it rather than entering the pool twice.
 func (w *waiters) drop(cmd *diempb.Command, p *Pending) {
 	k := cmdKey{cmd.GetClient(), cmd.GetSeq()}
-	if w.pending[k] == p {
+	p.refs--
+	if w.pending[k] == p && p.refs == 0 && !p.pooled {
 		delete(w.pending, k)
 	}
 }

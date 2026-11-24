@@ -276,6 +276,7 @@ func (r *Replica) enroll(cmd *diempb.Command, propose bool) (*Pending, error) {
 		r.waiters.drop(cmd, p)
 		return nil, errFull
 	}
+	p.pooled = true
 	return p, nil
 }
 
