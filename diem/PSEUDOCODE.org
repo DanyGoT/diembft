@@ -151,7 +151,10 @@ below it.
   the block is already the frontier, which is the common case since every QC
   re-commits. It also returns when the block is not a descendant of the frontier
   — the missing-ancestor gap again, seen from the commit side: the frontier
-  cannot walk back across a block that was never speculated. =forget= is a
+  cannot walk back across a block that was never speculated. =Commit= takes
+  the committing certificate rather than the block id, which is its vote's
+  parent, so that =ledger.go:OnCommit= can hand it on as a client's proof of
+  commit. =forget= is a
   retention bound with no counterpart at all; see *Code with no counterpart in
   the paper*.
 

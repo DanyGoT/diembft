@@ -775,7 +775,7 @@ func newCluster(t *testing.T, n int) []*node {
 		nd := &node{id: id}
 		signer := diemcrypto.New(privs[id], pubs)
 		ledger := diem.NewMemLedger()
-		ledger.OnCommit = func(b *diempb.Block) { nd.commits = append(nd.commits, b) }
+		ledger.OnCommit = func(chain []*diempb.Block, _ *diempb.QuorumCert) { nd.commits = append(nd.commits, chain...) }
 		nd.tr = New(Config{
 			ID: id, Server: srvs[i], Rejected: rejected,
 			Verifier: diem.NewVerifier(signer, diem.QuorumSize(n)),

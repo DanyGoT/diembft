@@ -180,11 +180,19 @@ func (s stamper) Proposal(p *diempb.ProposalMsg) {
 	s.Transport.Proposal(p)
 }
 
-// commit appends b to the log and, for a block this replica proposed, records
-// its propose-to-commit latency and its commands' submit-to-commit latency and
-// tells their clients. OnCommit runs first, so a client sees its command
-// applied. It runs inside a core call, so mu is already held.
-func (r *Replica) commit(b *diempb.Block) {
+// commit takes each block of chain, oldest first, through commitBlock. It
+// runs inside a core call, so mu is already held.
+func (r *Replica) commit(chain []*diempb.Block, _ *diempb.QuorumCert) {
+	for _, b := range chain {
+		r.commitBlock(b)
+	}
+}
+
+// commitBlock appends b to the log and, for a block this replica proposed,
+// records its propose-to-commit latency and its commands' submit-to-commit
+// latency and tells their clients. OnCommit runs first, so a client sees its
+// command applied.
+func (r *Replica) commitBlock(b *diempb.Block) {
 	own, ok := r.pool.committed(b, r.id)
 	if ok {
 		r.proposeToCommit += time.Since(own.sent)

@@ -65,11 +65,16 @@ func TestPendingStateAnswersForCommittedAndPendingBlocks(t *testing.T) {
 	}
 }
 
+// committing is a certificate whose vote commits the block with id.
+func committing(id []byte) *diempb.QuorumCert {
+	return qcWith(voteInfo(hashOf(0xC0), 0, id, 0), hashOf(1))
+}
+
 func TestCommitFrontierIsNoop(t *testing.T) {
 	l := NewMemLedger()
 	before := l.commitID
 
-	l.Commit([]byte(before))
+	l.Commit(committing([]byte(before)))
 
 	if l.commitID != before {
 		t.Fatalf("Commit(frontier) moved the frontier from %x to %x", before, l.commitID)
@@ -82,7 +87,7 @@ func TestCommitNonDescendantDoesNothing(t *testing.T) {
 
 	// Never speculated, so it cannot be a descendant of the frontier.
 	stray := NewBlock(1, 1, nil, bareQC(hashOf(0xAB), 0))
-	l.Commit(stray.GetId())
+	l.Commit(committing(stray.GetId()))
 
 	if l.commitID != before {
 		t.Fatalf("Commit(non-descendant) moved the frontier from %x to %x", before, l.commitID)
@@ -95,7 +100,13 @@ func TestCommitNonDescendantDoesNothing(t *testing.T) {
 func TestCommitAdvancesOverPrefixAndFiresOnCommitInOrder(t *testing.T) {
 	l := NewMemLedger()
 	var committed [][]byte
-	l.OnCommit = func(b *diempb.Block) { committed = append(committed, b.GetId()) }
+	var by *diempb.QuorumCert
+	l.OnCommit = func(chain []*diempb.Block, qc *diempb.QuorumCert) {
+		for _, b := range chain {
+			committed = append(committed, b.GetId())
+		}
+		by = qc
+	}
 
 	b1 := NewBlock(1, 1, nil, bareQC(genesisBlock.GetId(), 0))
 	l.Speculate(b1)
@@ -104,11 +115,15 @@ func TestCommitAdvancesOverPrefixAndFiresOnCommitInOrder(t *testing.T) {
 	b3 := NewBlock(1, 3, nil, bareQC(b2.GetId(), 2))
 	l.Speculate(b3)
 
-	l.Commit(b3.GetId())
+	qc := committing(b3.GetId())
+	l.Commit(qc)
 
 	want := [][]byte{b1.GetId(), b2.GetId(), b3.GetId()}
 	if !slices.EqualFunc(committed, want, bytes.Equal) {
-		t.Fatalf("OnCommit fired for %x, want %x (oldest first)", committed, want)
+		t.Fatalf("OnCommit got %x, want %x (oldest first)", committed, want)
+	}
+	if by != qc {
+		t.Fatal("OnCommit did not get the certificate that committed the chain")
 	}
 	for _, id := range want {
 		if _, ok := l.CommittedBlock(id); !ok {
@@ -125,7 +140,7 @@ func TestCommitPrunesConflictingForks(t *testing.T) {
 	l.Speculate(forkA)
 	l.Speculate(forkB)
 
-	l.Commit(forkA.GetId())
+	l.Commit(committing(forkA.GetId()))
 
 	if _, ok := l.CommittedBlock(forkA.GetId()); !ok {
 		t.Fatal("the committed branch did not survive")
@@ -144,7 +159,7 @@ func TestHistoryBoundsRetentionButKeepsFrontier(t *testing.T) {
 	for i := uint64(1); i <= 3; i++ {
 		b := NewBlock(1, i, nil, bareQC(parent, parentRound))
 		l.Speculate(b)
-		l.Commit(b.GetId())
+		l.Commit(committing(b.GetId()))
 		blocks = append(blocks, b)
 		parent, parentRound = b.GetId(), i
 	}
