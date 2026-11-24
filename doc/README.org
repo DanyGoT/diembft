@@ -12,8 +12,9 @@
   while the chain keeps growing, and peers keep 512 committed blocks
   (=diem/ledger.go:History=). In the sim, a replica that misses 256 consecutive
   proposals or more never catches up; that needs state sync.
-- =highest_vote_round= is not persisted. =diem/pacemaker.go:LocalTimeoutRound= has
-  no =save_consensus_state()=, so a restarted replica can vote twice in a round.
+- Safety's counters are saved only with =-state= (=diem/safety.go:save=); without
+  it a restarted replica can vote twice in a round. Nothing else is saved, so a
+  restarted replica's ledger starts again from genesis.
 - Leaders rotate round-robin only. The paper's reputation election (3.7) is left
   out, so a crashed replica costs three rounds in every rotation: its own two, and
   the one before, whose votes go to it. The reputation code is on the branch

@@ -326,6 +326,9 @@ build the =VoteInfo= and =LedgerCommitInfo= and sign the latter.
   has not yet fetched an ancestor — has no result to claim. Note the ordering
   consequence: the counters move only on the path that produces a vote, so a
   declined vote does not burn the round.
+- Differs :: the raised counters are saved before the vote is signed
+  (=safety.go:save=), and a failed save declines the vote. See
+  =save_consensus_state()=.
 - Differs :: no re-verification; see =valid_signatures=.
 
 ** make_timeout(round, high_qc, last_tc)
@@ -335,6 +338,8 @@ in the round, and sign =(round, high_qc.round)=.
 
 - Implemented :: =safety.go:MakeTimeout=; the digest is
   =proto/diempb/hash.go:TimeoutDigest=.
+- Differs :: the raised counter is saved before the timeout is signed, as in
+  =make_vote=.
 - Differs :: no re-verification; see =valid_signatures=.
 
 ** valid_signatures(b, last_tc)
@@ -385,7 +390,8 @@ Build this replica's timeout for the current round and broadcast it.
 
 - Implemented :: =pacemaker.go:LocalTimeoutRound=.
 - Differs :: four things.
-  1. =save_consensus_state()= is absent — see *Procedures with no counterpart*.
+  1. =save_consensus_state()= is not called here; =MakeTimeout= saves instead.
+     See *save_consensus_state()*.
   2. It skips the broadcast when =MakeTimeout= declines, but still re-arms.
      The paper broadcasts a =TimeoutMsg= built around the result
      unconditionally.
@@ -396,6 +402,22 @@ Build this replica's timeout for the current round and broadcast it.
      a TC, which leaves a replica whose broadcast was lost or refused with no
      timer at all; here the timeout is retried until a QC or a TC moves the
      round.
+
+** save_consensus_state()
+
+The paper calls it at the top of =local_timeout_round= and does not say what
+it holds.
+
+- Implemented :: =safety.go:save=, through =seams.go:SafetyStore=; the file
+  behind it is =replica/state.go:fileStore=, set with =-state=.
+- Differs :: it saves =Safety='s two counters, nothing else, and it runs inside
+  =make_vote= and =make_timeout= whenever they raise a counter, before
+  signing. =make_vote= raises =highest_vote_round= on every vote, so saving
+  only before a timeout would let a restarted replica vote twice in a round.
+  Nothing is signed until the save returns, and a failed save signs nothing.
+- Differs :: without =-state= nothing is saved, and only crash-stop is safe.
+  A restarted replica loads the counters before =Core.Start=
+  (=replica.go:New=) and otherwise starts from genesis.
 
 ** process_remote_timeout(tmo)
 
@@ -480,13 +502,6 @@ Not implemented; see *Procedures with no counterpart*.
   with the termination guards the paper's loop lacks, is on the branch
   =archive/reputation-leader=.
 
-- =save_consensus_state()= (3.5, called from =local_timeout_round=) :: the two
-  counters it would persist are =Safety='s (=safety.go:highestVoteRound= and
-  =highestQCRound=), and this is a prototype with no durable state, so
-  persisting them would have nothing to recover into. Recorded in
-  =pacemaker.go:LocalTimeoutRound=. A replica that restarts here restarts from
-  genesis; the paper's version could restart from its last vote.
-
 Two more are implemented but not as procedures, noted so nobody hunts for them:
 =get_round_timer= is a type held as a field rather than a method (=pacemaker.go:RoundTimer=),
 and =stop_timer= drops its round argument (=pacemaker.go:Stop=).
@@ -546,7 +561,8 @@ Section 3 is a protocol, not a program. These are what it takes to run one.
   fetch a block they missed, so block sync cannot bring back a replica that has
   fallen further behind than =History= blocks.
 - The seams :: =seams.go:Transport=, where the paper writes "send" and
-  "broadcast", plus =Crypto= and =Clock=, which the paper assumes.
+  "broadcast", plus =Crypto= and =Clock=, which the paper assumes, and
+  =SafetyStore=, behind =save_consensus_state()=.
 - Domain-separated digests :: =proto/diempb/hash.go:domainBlock=,
   =domainVoteInfo=, =domainLedgerCommit=, =domainTimeout= and =domainQCSigs=,
   plus =hash.go:domainState=. The paper writes =hash()=. Six distinct tags keep
