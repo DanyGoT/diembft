@@ -75,7 +75,7 @@ func (o *options) writeResults(n int, results []*benchkit.Result) error {
 	for _, res := range results {
 		cfg := res.GetConfig()
 		cfg.ApplyDimensions(benchkit.Dimensions{
-			Benchmark: "diem", Nodes: n,
+			Benchmark: o.benchmark(), Nodes: n,
 			Workers: o.std.Workers, Payload: o.std.Payload, Rate: o.std.Rate,
 			SendBuffer: int(o.sendBuffer), RecvBuffer: int(o.recvBuffer),
 		})
@@ -84,5 +84,20 @@ func (o *options) writeResults(n int, results []*benchkit.Result) error {
 		cfg.SetStatsMode(o.std.StatsMode)
 	}
 	label := cmp.Or(o.std.Self, "local")
+	if o.client {
+		label = "client"
+	}
 	return benchkit.WriteLabeledReport(results, label, o.std.Output)
+}
+
+// benchmark names what an op is: a command timed at a replica, at a network
+// client, or an empty call.
+func (o *options) benchmark() string {
+	switch {
+	case o.ping:
+		return "diem-ping"
+	case o.client:
+		return "diem-client"
+	}
+	return "diem"
 }

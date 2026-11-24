@@ -13,6 +13,14 @@
 // block. It is not a benchkit dimension, so through sweep it goes in
 // -extra-args. With -workers 0 blocks are empty.
 //
+// With -client it runs no replica: it runs -workers network clients against
+// the replicas in -remotes. Each submits one command to every replica, waits
+// for the first reply that proves the command committed, and checks it; an op
+// is then a command timed until its proof checked out. With -ping an op is an
+// empty call to every replica, answered at the first reply: the network's
+// share of that latency. Run the replicas with -workers 0 to measure only
+// these clients.
+//
 // -fault-kill-after crashes replica -fault-replica that long after its first
 // round, the point -time also counts from, so the wait for peers is not in it.
 // Through sweep, pass both in -extra-args, for example
@@ -59,6 +67,7 @@ type options struct {
 	recvBuffer     uint
 	faultReplica   int
 	state          string
+	client, ping   bool
 }
 
 // newOptions registers the standard benchkit flags and diem's own on fs.
@@ -73,6 +82,8 @@ func newOptions(fs *flag.FlagSet) *options {
 	fs.UintVar(&o.sendBuffer, "send-buffer", 0, "Gorums send queue capacity per peer; 0 picks Gorums' default")
 	fs.UintVar(&o.recvBuffer, "recv-buffer", 0, "Gorums receive queue capacity per stream; 0 picks Gorums' default")
 	fs.StringVar(&o.state, "state", "", "file that keeps this replica's safety counters across restarts; without it a restarted replica can vote twice in a round; not with -local")
+	fs.BoolVar(&o.client, "client", false, "run -workers network clients against the replicas in -remotes instead of a replica")
+	fs.BoolVar(&o.ping, "ping", false, "with -client, time empty calls instead of commands")
 	fs.IntVar(&o.faultReplica, "fault-replica", 1, "the replica -fault-kill-after stops, counted from its first round as -time is; every node gets the same sweep -extra-args, so only this one exits")
 	return o
 }
@@ -115,6 +126,8 @@ func run(args []string) (err error) {
 	switch {
 	case o.genKeys:
 		return o.writeKeys()
+	case o.client:
+		return o.runClient()
 	case o.local > 0:
 		return o.runLocal(o.local)
 	case o.std.Self != "":
