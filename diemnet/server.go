@@ -9,6 +9,7 @@ import (
 	"github.com/DanyGoT/diembft/proto/diempb"
 	"github.com/relab/gorums"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // VerifyInterceptor drops every message accept refuses, from the peer
@@ -50,8 +51,9 @@ func accept(v *diem.Verifier, from uint32, msg proto.Message) bool {
 // proposal arrives before its parent and this replica declines to vote until it
 // has fetched the parent.
 type handler struct {
-	core *diem.Core
-	mu   sync.Locker // the replica's lock, which serializes every core call
+	core  *diem.Core
+	mu    sync.Locker   // the replica's lock, which serializes every core call
+	ready chan struct{} // closed once this replica's peers are connected
 }
 
 var _ diempb.DiemServer = (*handler)(nil)
@@ -85,6 +87,17 @@ func (h *handler) RequestBlock(_ gorums.ServerContext, in *diempb.BlockHash) (*d
 		return nil, errNoBlock
 	}
 	return b, nil
+}
+
+// Ready answers once this replica is ready. It takes no lock: the replica
+// holds it until it has passed the barrier.
+func (h *handler) Ready(ctx gorums.ServerContext, _ *emptypb.Empty) (*emptypb.Empty, error) {
+	select {
+	case <-h.ready:
+		return &emptypb.Empty{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // block hands a fetched block to the core.

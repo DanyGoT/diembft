@@ -74,6 +74,12 @@ type DiemClient interface {
 	// A quorum call, not a unicast: a unicast has no reply, and asking every
 	// peer means one slow or Byzantine peer cannot hold the fetch up.
 	RequestBlock(ctx context.Context, in *BlockHash) *gorums.Call[*BlockHash, *Block]
+
+	// The start barrier. A replica answers once its own peers are connected,
+	// so a call that every replica answered means every replica can reach all
+	// the others. A quorum call rather than a multicast: a pending call is sent
+	// again when its stream comes back, a one-way message is lost.
+	Ready(ctx context.Context, in *emptypb.Empty) *gorums.Call[*emptypb.Empty, *emptypb.Empty]
 }
 
 // NewDiemClient returns a client whose calls execute on config.
@@ -137,6 +143,10 @@ func (c diemClient) RequestBlock(ctx context.Context, in *BlockHash) *gorums.Cal
 	return gorumsimpl.QuorumCall[*BlockHash, *Block](ctx, c.config, in, "diempb.Diem.RequestBlock")
 }
 
+func (c diemClient) Ready(ctx context.Context, in *emptypb.Empty) *gorums.Call[*emptypb.Empty, *emptypb.Empty] {
+	return gorumsimpl.QuorumCall[*emptypb.Empty, *emptypb.Empty](ctx, c.config, in, "diempb.Diem.Ready")
+}
+
 // DiemServer is the server API for Diem.
 //
 // GORUMS: an RPC name must never equal a message name, or the generated client
@@ -148,6 +158,7 @@ type DiemServer interface {
 	Vote(gorums.ServerContext, *VoteMsg)
 	Timeout(gorums.ServerContext, *TimeoutMsg)
 	RequestBlock(gorums.ServerContext, *BlockHash) (*Block, error)
+	Ready(gorums.ServerContext, *emptypb.Empty) (*emptypb.Empty, error)
 }
 
 func RegisterDiemServer(srv *gorums.Server, impl DiemServer) {
@@ -169,6 +180,15 @@ func RegisterDiemServer(srv *gorums.Server, impl DiemServer) {
 	srv.RegisterHandler("diempb.Diem.RequestBlock", func(ctx gorums.ServerContext, in *gorums.Message, send func(proto.Message)) error {
 		req := gorums.AsProto[*BlockHash](in)
 		resp, err := impl.RequestBlock(ctx, req)
+		if err != nil {
+			return err
+		}
+		send(resp)
+		return nil
+	})
+	srv.RegisterHandler("diempb.Diem.Ready", func(ctx gorums.ServerContext, in *gorums.Message, send func(proto.Message)) error {
+		req := gorums.AsProto[*emptypb.Empty](in)
+		resp, err := impl.Ready(ctx, req)
 		if err != nil {
 			return err
 		}

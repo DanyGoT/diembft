@@ -168,7 +168,7 @@ func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
 	select {
 	case <-r.started:
 	default:
-		return nil, false // Run holds mu until every peer is connected
+		return nil, false // Run holds mu until every replica is ready
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -178,17 +178,19 @@ func (r *Replica) Submit(cmd []byte) (done <-chan struct{}, ok bool) {
 	return r.pool.add(slices.Clone(cmd))
 }
 
-// Run serves the transport, waits for every peer, then runs consensus until
-// ctx is done or Measure.Duration has passed. Waiting for peers before the
-// first round matters: a proposal multicast into a half-connected
-// configuration is simply lost, and the replicas that missed it must fetch it
-// before they can vote again. mu is held until the core has started, so a
-// message that arrives earlier waits for it. Cancelling ctx is how a replica
-// stops; the transport is shut down before the core.
+// Run serves the transport, waits for every peer, then for every replica to be
+// ready, and runs consensus until ctx is done or Measure.Duration has passed.
+// Waiting for peers before the first round matters: a proposal multicast into
+// a half-connected configuration is simply lost, and the replicas that missed
+// it must fetch it before they can vote again. Waiting for the other replicas
+// too keeps a replica whose peers came up early from timing out round 1 alone
+// inside its measurement. mu is held until the core has started, so a message
+// that arrives earlier waits for it. Cancelling ctx is how a replica stops;
+// the transport is shut down before the core.
 func (r *Replica) Run(ctx context.Context) error {
 	r.mu.Lock()
 	r.net.Start(r.core, &r.mu)
-	if err := r.net.WaitForPeers(ctx); err != nil {
+	if err := r.start(ctx); err != nil {
 		r.mu.Unlock()
 		r.net.Stop()
 		return err
@@ -216,13 +218,22 @@ func (r *Replica) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// start waits until this replica's peers are connected and every replica is
+// ready.
+func (r *Replica) start(ctx context.Context) error {
+	if err := r.net.WaitForPeers(ctx); err != nil {
+		return err
+	}
+	return r.net.Barrier(ctx)
+}
+
 // Result is the run's measurement: an op is a committed command submitted to
 // this replica, timed submit to commit on its own clock. Read it only after Run
 // returns; it is nil if Run never reached the first round.
 func (r *Replica) Result() *benchkit.Result { return r.result }
 
-// Started is closed when Run reaches the first round, after every peer is
-// connected. The measurement and Measure.Duration count from here.
+// Started is closed when Run reaches the first round, after every replica is
+// ready. The measurement and Measure.Duration count from here.
 func (r *Replica) Started() <-chan struct{} { return r.started }
 
 // ID is this replica's identity.
