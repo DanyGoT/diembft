@@ -84,6 +84,7 @@ rounds in every rotation, its own two and the one before, whose votes go to it.
 | safe_to_extend | consecutive(block.round, tc.round) and qc_round >= max(tc.tmo_high_qc_rounds) | =safety.go:safeToExtend= |
 | safe_to_timeout | qc_round >= highest_qc_round; round > max(highest_vote_round-1, qc_round); consecutive(round, qc_round) or consecutive(round, tc.round) | =safety.go:safeToTimeout= |
 | vote counters | highest_vote_round raised on vote and on timeout; highest_qc_round raised on vote; both monotone non-decreasing | =safety.go:increaseHighestVoteRound=, =updateHighestQCRound=, =MakeVote=, =MakeTimeout= |
+| counters saved first | with a store, raised counters are durable before the vote or timeout is signed (keeps the two rows above across a restart) | =safety.go:save= |
 | timeout burns round | after timing out of r, no vote in r (needed by Lemma 2) | =safety.go:MakeTimeout= |
 | timeout reports high_qc | timeout carries the local high_qc, signed over (round, high_qc.round) (feeds Lemma 2) | =pacemaker.go:LocalTimeoutRound=, =safety.go:MakeTimeout= |
 | 2-chain commit | commit_state_id != bottom (zero hash) only when block.round = qc.round+1; QC commits its parent | =safety.go:commitStateIDCandidate=, =blocktree.go:ProcessQC= |
@@ -127,9 +128,9 @@ Not implemented here (we commit on a 2-chain); kept for the proof structure.
 
 * Gaps / unverified
 Lemma numbers here are DiemBFT's.
-- No persistence: =highest_vote_round= / =highest_qc_round= are in memory only, so a
-  restart can violate Lemma 2 and Property 1 (paper: =save_consensus_state=;
-  =pacemaker.go:LocalTimeoutRound= notes the omission).
+- Persistence only with =-state=: =highest_vote_round= / =highest_qc_round= are saved
+  before every vote or timeout that raises them (=safety.go:save=). Without it they are
+  in memory only, and a restart can violate Lemma 2 and Property 1.
 - Block sync is an addition (=core.go:insert=): a replica missing an ancestor fetches it
   and votes again from the next proposal, but =safety.go:MakeVote= declines the one in
   hand (=DeclinedMissingAncestor=). So Lemma 7 (honest leader's proposal gets a vote) and
