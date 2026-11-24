@@ -55,6 +55,12 @@ type Config struct {
 	// Measure configures the measurement taken from core start. Its Duration
 	// bounds the run; 0 runs until ctx is done.
 	Measure benchkit.Options
+
+	// StateFile, if set, keeps the safety counters across restarts: New loads
+	// them from it, and every vote or timeout that raises them saves them there
+	// first. Empty keeps them in memory, and a restarted replica can then vote
+	// twice in a round.
+	StateFile string
 }
 
 // Replica is one DiemBFT replica: a protocol core and the Gorums transport
@@ -87,8 +93,9 @@ type Replica struct {
 	started      chan struct{}
 }
 
-// New wires a replica.
-func New(cfg Config) *Replica {
+// New wires a replica. It fails only when StateFile cannot be read or
+// written.
+func New(cfg Config) (*Replica, error) {
 	if cfg.RoundTimeout == 0 {
 		cfg.RoundTimeout = defaultRoundTimeout
 	}
@@ -109,6 +116,22 @@ func New(cfg Config) *Replica {
 	}
 	if cfg.Keys[cfg.ID] == nil {
 		panic(fmt.Sprintf("replica: no public key registered for this replica's own ID %d", cfg.ID))
+	}
+
+	var state diem.SafetyState
+	var store diem.SafetyStore
+	if cfg.StateFile != "" {
+		var err error
+		if state, err = loadState(cfg.StateFile); err != nil {
+			return nil, err
+		}
+		// Saving the loaded state back makes a path that cannot be written fail
+		// here rather than silence the replica at its first vote.
+		fs := fileStore{cfg.StateFile}
+		if err := fs.save(state); err != nil {
+			return nil, err
+		}
+		store = fs
 	}
 
 	validators := slices.Sorted(maps.Keys(cfg.Keys))
@@ -139,8 +162,11 @@ func New(cfg Config) *Replica {
 		RoundTimer: diem.RoundTimer{Alpha: cfg.RoundTimeout, Beta: cfg.RoundTimeout / 2},
 		Lock:       &r.mu,
 		MemPool:    r.pool,
+
+		SafetyState: state,
+		SafetyStore: store,
 	})
-	return r
+	return r, nil
 }
 
 // stamper tells the pool when this replica sends each of its proposals.
