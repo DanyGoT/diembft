@@ -58,13 +58,29 @@ func Certificates(privs map[uint32]*ecdsa.PrivateKey) (map[uint32][]byte, error)
 	return certs, nil
 }
 
-// TLSConfig is replica id's mutual TLS configuration, for its server and its
-// dialer alike: it presents certs[id] with key, and accepts a peer only if it
-// presents one of certs.
+// TLSConfig is replica id's TLS configuration, for its server and its dialer
+// alike: it presents certs[id] with key, and accepts a peer only if it
+// presents one of certs. A client may connect without a certificate: Gorums
+// refuses a stream that claims a replica's ID without that replica's
+// certificate, and one that claims none can send no protocol message, since
+// each must name its sender.
 func TLSConfig(id uint32, key *ecdsa.PrivateKey, certs map[uint32][]byte) (*tls.Config, error) {
 	if certs[id] == nil {
 		return nil, fmt.Errorf("no certificate for replica %d", id)
 	}
+	c, err := ClientTLSConfig(certs)
+	if err != nil {
+		return nil, err
+	}
+	c.Certificates = []tls.Certificate{{Certificate: [][]byte{certs[id]}, PrivateKey: key}}
+	c.ClientCAs = c.RootCAs
+	c.ClientAuth = tls.VerifyClientCertIfGiven
+	return c, nil
+}
+
+// ClientTLSConfig is a client's TLS configuration: it trusts exactly the
+// replicas' certificates and presents none.
+func ClientTLSConfig(certs map[uint32][]byte) (*tls.Config, error) {
 	pool := x509.NewCertPool()
 	for i, der := range certs {
 		c, err := x509.ParseCertificate(der)
@@ -73,12 +89,5 @@ func TLSConfig(id uint32, key *ecdsa.PrivateKey, certs map[uint32][]byte) (*tls.
 		}
 		pool.AddCert(c)
 	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{certs[id]}, PrivateKey: key}},
-		RootCAs:      pool,
-		ClientCAs:    pool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ServerName:   tlsName,
-		MinVersion:   tls.VersionTLS13,
-	}, nil
+	return &tls.Config{RootCAs: pool, ServerName: tlsName, MinVersion: tls.VersionTLS13}, nil
 }

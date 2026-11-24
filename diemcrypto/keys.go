@@ -57,29 +57,38 @@ func ReadKeys(dir string, id uint32) (*ecdsa.PrivateKey, map[uint32]*ecdsa.Publi
 	if err != nil {
 		return nil, nil, fmt.Errorf("replica %d private key: %w", id, err)
 	}
-
-	names, err := filepath.Glob(filepath.Join(dir, "*.pub"))
+	pubs, err := ReadPublicKeys(dir)
 	if err != nil {
 		return nil, nil, err
+	}
+	return priv, pubs, nil
+}
+
+// ReadPublicKeys reads every replica's public key from dir. They define the
+// replica set, and so the quorum.
+func ReadPublicKeys(dir string) (map[uint32]*ecdsa.PublicKey, error) {
+	names, err := filepath.Glob(filepath.Join(dir, "*.pub"))
+	if err != nil {
+		return nil, err
 	}
 	pubs := make(map[uint32]*ecdsa.PublicKey, len(names))
 	for _, name := range names {
 		base := filepath.Base(name)
 		n, err := strconv.ParseUint(base[:len(base)-len(".pub")], 10, 32)
 		if err != nil {
-			return nil, nil, fmt.Errorf("public key %q: name is not a replica ID", base)
+			return nil, fmt.Errorf("public key %q: name is not a replica ID", base)
 		}
 		der, err := readPEM(name, "PUBLIC KEY")
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		key, err := x509.ParsePKIXPublicKey(der)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", base, err)
+			return nil, fmt.Errorf("%s: %w", base, err)
 		}
 		pub, ok := key.(*ecdsa.PublicKey)
 		if !ok {
-			return nil, nil, fmt.Errorf("%s: not an ECDSA public key", base)
+			return nil, fmt.Errorf("%s: not an ECDSA public key", base)
 		}
 		pubs[uint32(n)] = pub
 	}
@@ -88,14 +97,14 @@ func ReadKeys(dir string, id uint32) (*ecdsa.PrivateKey, map[uint32]*ecdsa.Publi
 	// <id>.pub left in the directory would otherwise change both, silently,
 	// and only on the replicas that can see the file.
 	if len(pubs) == 0 {
-		return nil, nil, fmt.Errorf("no public keys in %s", dir)
+		return nil, fmt.Errorf("no public keys in %s", dir)
 	}
 	for i := uint32(1); int(i) <= len(pubs); i++ {
 		if pubs[i] == nil {
-			return nil, nil, fmt.Errorf("%s holds %d public keys but not %d.pub: they must be 1..%d", dir, len(pubs), i, len(pubs))
+			return nil, fmt.Errorf("%s holds %d public keys but not %d.pub: they must be 1..%d", dir, len(pubs), i, len(pubs))
 		}
 	}
-	return priv, pubs, nil
+	return pubs, nil
 }
 
 // ReadCerts reads the certificates of replicas 1..n from dir.

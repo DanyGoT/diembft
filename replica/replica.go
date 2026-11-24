@@ -23,6 +23,10 @@ const (
 	defaultBatch        = 64
 	defaultPoolSize     = 4096
 	defaultStartTimeout = 30 * time.Second
+
+	// submitTimeout bounds how long a client's Submit waits here. A client
+	// that gives up does not reach the server, so the wait ends on its own.
+	submitTimeout = 10 * time.Second
 )
 
 var errStopped = errors.New("replica: stopped")
@@ -68,7 +72,8 @@ type Config struct {
 // Replica is one DiemBFT replica: a protocol core and the Gorums transport
 // underneath.
 type Replica struct {
-	id   uint32
+	id         uint32
+	validators []uint32
 	core *diem.Core
 	net  *diemnet.Transport
 
@@ -141,6 +146,7 @@ func New(cfg Config) (*Replica, error) {
 	signer := diemcrypto.New(cfg.Key, cfg.Keys)
 	r := &Replica{
 		id:           cfg.ID,
+		validators:   validators,
 		pool:         &pool{batch: cfg.Batch, size: cfg.PoolSize},
 		waiters:      newWaiters(cfg.PoolSize),
 		onCommit:     cfg.OnCommit,
@@ -155,6 +161,7 @@ func New(cfg Config) (*Replica, error) {
 		ID:       cfg.ID,
 		Verifier: diem.NewVerifier(signer, diem.QuorumSize(len(validators))),
 		Network:  cfg.Network,
+		Submit:   r.submit,
 	})
 	r.core = diem.New(diem.Config{
 		ID:         cfg.ID,
@@ -221,6 +228,39 @@ func (r *Replica) Submit(cmd *diempb.Command) (*Pending, bool) {
 	defer r.mu.Unlock()
 	p, err := r.enroll(cmd, true)
 	return p, err == nil
+}
+
+// submit answers a network client: it waits for cmd to commit and returns the
+// proof. Every replica receives every command, and only cmd's owner proposes
+// it, so a command is in one block.
+func (r *Replica) submit(ctx context.Context, cmd *diempb.Command) (*diempb.CommitProof, error) {
+	ctx, cancel := context.WithTimeout(ctx, submitTimeout)
+	defer cancel()
+	select {
+	case <-r.started:
+	case <-ctx.Done():
+		return nil, ctx.Err() // Run holds mu until every replica is ready
+	}
+	r.mu.Lock()
+	p, err := r.enroll(cmd, r.owner(cmd.GetClient()) == r.id)
+	r.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case <-p.Done():
+		return p.Proof(), nil
+	case <-ctx.Done():
+		r.mu.Lock()
+		r.waiters.drop(cmd, p)
+		r.mu.Unlock()
+		return nil, ctx.Err()
+	}
+}
+
+// owner is the replica that proposes client's commands.
+func (r *Replica) owner(client uint64) uint32 {
+	return r.validators[client%uint64(len(r.validators))]
 }
 
 // enroll waits for cmd, and if propose, puts it in the pool the first time.

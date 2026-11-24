@@ -3,6 +3,7 @@ package replica
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"maps"
@@ -309,6 +310,64 @@ func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 	for i, m := range seen {
 		if !maps.Equal(m, want) {
 			t.Errorf("replica %d committed %v, want %v", i+1, m, want)
+		}
+	}
+}
+
+// TestNetworkClientGetsAProof: a client submits to every replica over Gorums
+// and gets back a proof, which it checks, that its command committed in its
+// owner's block. No other replica proposes it, so every log carries each
+// command once.
+func TestNetworkClientGetsAProof(t *testing.T) {
+	const n, cmds = 4, 3
+	const client, owner = 6, 3 // the third of the sorted validators, 6 mod 4
+	var keys map[uint32]*ecdsa.PublicKey
+	reps, run := cluster(t, n, testRound, func(cfg *Config) { keys = cfg.Keys })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	allDone := make(chan struct{})
+	go func() { run(ctx); close(allDone) }()
+
+	addrs := make(map[uint32]string, n)
+	for _, r := range reps {
+		addrs[r.ID()] = r.net.Addr()
+	}
+	c, err := diemnet.Dial(addrs, nil, diem.NewVerifier(diemcrypto.New(nil, keys), diem.QuorumSize(n)))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(c.Close)
+	for seq := uint64(1); seq <= cmds; seq++ {
+		sctx, scancel := context.WithTimeout(ctx, 10*time.Second)
+		proof, err := c.Submit(sctx, command(client, seq))
+		scancel()
+		if err != nil {
+			t.Fatalf("Submit %d: %v", seq, err)
+		}
+		if a := proof.GetBlocks()[0].GetAuthor(); a != owner {
+			t.Errorf("command %d proposed by replica %d, want its owner %d", seq, a, owner)
+		}
+	}
+	committed := func() bool {
+		for _, r := range reps {
+			if r.Commands() < cmds {
+				return false
+			}
+		}
+		return true
+	}
+	if !waitFor(10*time.Second, committed) {
+		t.Fatal("not every replica committed every command")
+	}
+	cancel()
+	<-allDone
+	for _, r := range reps {
+		var carried int
+		for _, b := range r.Log() {
+			carried += len(b.GetPayload())
+		}
+		if carried != cmds {
+			t.Errorf("replica %d: the log carries %d commands, want each of %d once", r.ID(), carried, cmds)
 		}
 	}
 }
