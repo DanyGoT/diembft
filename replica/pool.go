@@ -7,12 +7,13 @@ import (
 	"github.com/DanyGoT/diembft/proto/diempb"
 )
 
-// pool is the MemPool (DiemBFT 3.6) over the commands submitted to this
-// replica. It runs under the replica's lock.
+// pool is the MemPool (DiemBFT 3.6) over the commands this replica proposes:
+// those submitted to it in process, and those of the network clients it owns.
+// It runs under the replica's lock.
 //
 // The paper's MemPool hands a command out once. A client here waits for its
-// command to commit, and only this replica proposes what was submitted to it,
-// so the pool keeps each command until a block of its own carrying it commits,
+// command to commit, and only this replica proposes what is in its pool, so
+// the pool keeps each command until a block of its own carrying it commits,
 // and puts it back once that block's proposal can no longer commit.
 type pool struct {
 	batch, size int
@@ -22,11 +23,10 @@ type pool struct {
 	inflight    []flight
 }
 
-// entry is a submitted command; done closes once it commits.
+// entry is a submitted command, encoded as a block payload entry.
 type entry struct {
 	cmd       []byte
 	submitted time.Time
-	done      chan struct{}
 }
 
 // flight is one of this replica's sent proposals.
@@ -37,14 +37,13 @@ type flight struct {
 }
 
 // add queues cmd, or returns false when the pool already holds size commands.
-func (p *pool) add(cmd []byte) (<-chan struct{}, bool) {
+func (p *pool) add(cmd []byte) bool {
 	if p.held >= p.size {
-		return nil, false
+		return false
 	}
-	e := entry{cmd: cmd, submitted: time.Now(), done: make(chan struct{})}
-	p.queue = append(p.queue, e)
+	p.queue = append(p.queue, entry{cmd: cmd, submitted: time.Now()})
 	p.held++
-	return e.done, true
+	return true
 }
 
 // GetTransactions is the paper's MemPool.get_transactions (3.6). A previous

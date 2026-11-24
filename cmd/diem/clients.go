@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DanyGoT/diembft/proto/diempb"
 	"github.com/DanyGoT/diembft/replica"
 	"github.com/relab/gorums/benchkit"
 )
@@ -21,30 +22,31 @@ func (o *options) clients(ctx context.Context, r *replica.Replica, limit int) {
 	var wg sync.WaitGroup
 	for w := range o.std.Workers {
 		pacer := benchkit.NewPacer(o.std.Rate, o.std.Workers, w, start)
-		wg.Go(func() { client(ctx, r, o.std.Payload, limit, pacer) })
+		id := uint64(r.ID())<<32 | uint64(w)
+		wg.Go(func() { client(ctx, r, id, o.std.Payload, limit, pacer) })
 	}
 	wg.Wait()
 }
 
-// client submits one command at a time and waits for it to commit. A full pool
-// makes it retry after a short pause.
-func client(ctx context.Context, r *replica.Replica, size, limit int, pacer *benchkit.Pacer) {
-	for sent := 0; limit == 0 || sent < limit; sent++ {
+// client submits one command at a time as client id and waits for it to
+// commit. A full pool makes it retry after a short pause.
+func client(ctx context.Context, r *replica.Replica, id uint64, size, limit int, pacer *benchkit.Pacer) {
+	for seq := uint64(1); limit == 0 || seq <= uint64(limit); seq++ {
 		if !pacer.Wait(ctx) {
 			return
 		}
-		cmd := make([]byte, size)
-		done, ok := r.Submit(cmd)
+		cmd := diempb.Command_builder{Client: id, Seq: seq, Payload: make([]byte, size)}.Build()
+		p, ok := r.Submit(cmd)
 		for !ok {
 			select {
 			case <-time.After(time.Millisecond):
 			case <-ctx.Done():
 				return
 			}
-			done, ok = r.Submit(cmd)
+			p, ok = r.Submit(cmd)
 		}
 		select {
-		case <-done:
+		case <-p.Done():
 		case <-ctx.Done():
 			return
 		}
