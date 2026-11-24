@@ -98,8 +98,8 @@ func (p *Pacemaker) fire(epoch uint64) {
 
 // LocalTimeoutRound broadcasts this replica's timeout for the current round.
 //
-// The paper's save_consensus_state() has no counterpart here: the two counters
-// it would persist live in Safety, and this prototype keeps no durable state.
+// The paper's save_consensus_state() happens inside Safety.MakeTimeout instead,
+// which saves the counters it raises before signing.
 func (p *Pacemaker) LocalTimeoutRound() {
 	// Re-arm first, whatever Safety decides. The paper (3.5,
 	// local_timeout_round) stops the timer and relies on a TC arriving; a

@@ -28,7 +28,7 @@ type Core struct {
 }
 
 // Config is everything a Core needs. Every field is required except
-// MemPool.
+// MemPool, SafetyState and SafetyStore.
 type Config struct {
 	ID         uint32
 	Validators []uint32
@@ -47,6 +47,13 @@ type Config struct {
 	// MemPool supplies the payload for a leader's proposal (paper 3.6).
 	// Nil proposes empty blocks, which still commits the pipeline below them.
 	MemPool MemPool
+
+	// SafetyState is where Safety's counters start: zero for a new replica,
+	// the last saved state for a restarted one.
+	SafetyState SafetyState
+	// SafetyStore saves the counters before every vote or timeout that raises
+	// them. Nil keeps them in memory only, so only crash-stop is safe.
+	SafetyStore SafetyStore
 }
 
 // State is a scalar snapshot of this replica's progress.
@@ -70,6 +77,8 @@ func New(cfg Config) *Core {
 
 	tree := NewBlockTree(cfg.ID, quorum, cfg.Ledger, cfg.Crypto)
 	safety := NewSafety(cfg.ID, cfg.Crypto, cfg.Ledger, tree)
+	safety.set(cfg.SafetyState)
+	safety.store = cfg.SafetyStore
 	pacemaker := NewPacemaker(quorum, faulty, cfg.Clock, cfg.RoundTimer, cfg.Lock, cfg.Transport, safety, tree)
 	leaders := NewLeaderElection(cfg.Validators)
 

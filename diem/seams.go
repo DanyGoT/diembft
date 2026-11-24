@@ -57,3 +57,17 @@ type SystemClock struct{}
 func (SystemClock) Now() time.Time { return time.Now() }
 
 func (SystemClock) AfterFunc(d time.Duration, f func()) Timer { return time.AfterFunc(d, f) }
+
+// SafetyState is Safety's two counters (3.4), the state a replica must not
+// lose across a restart: a replica that forgets them can vote twice in a round.
+type SafetyState struct {
+	HighestVoteRound uint64
+	HighestQCRound   uint64
+}
+
+// SafetyStore keeps SafetyState across restarts. Save runs under Config.Lock
+// before every vote or timeout that raises a counter, and returns only once
+// the state would survive a crash.
+type SafetyStore interface {
+	Save(SafetyState) error
+}

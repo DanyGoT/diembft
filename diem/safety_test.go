@@ -2,6 +2,7 @@ package diem
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/DanyGoT/diembft/proto/diempb"
@@ -277,6 +278,96 @@ func TestMakeTimeout(t *testing.T) {
 		digest := diempb.TimeoutDigest(to.GetRound(), to.GetHighQc().Round())
 		if !verifySig(f.crypto, digest, to.GetSig()) {
 			t.Error("timeout signature does not verify against diempb.TimeoutDigest(round, highQC.Round())")
+		}
+	})
+}
+
+// restarted is replica 1 back from a crash: a fresh ledger, and counters
+// loaded from what store last saved.
+func restarted(store *memStore) *safetyFixture {
+	f := newSafetyFixture(1)
+	f.safety.set(store.saved)
+	f.safety.store = store
+	return f
+}
+
+// round2 speculates a round-1 block and, over its QC, a round-2 block carrying
+// payload. It returns both, so a test can vote on the block or time out on the
+// QC.
+func round2(f *safetyFixture, payload string) (*diempb.Block, *diempb.QuorumCert) {
+	b1 := NewBlock(1, 1, [][]byte{[]byte("a")}, GenesisQC())
+	vi := diempb.VoteInfo_builder{
+		Id: b1.GetId(), Round: 1,
+		ParentId: genesisBlock.GetId(), ParentRound: 0,
+		ExecStateId: f.ledger.Speculate(b1),
+	}.Build()
+	qc1 := makeQC(vi, nil, 1, 2, 3)
+	b2 := NewBlock(2, 2, [][]byte{[]byte(payload)}, qc1)
+	f.ledger.Speculate(b2)
+	return b2, qc1
+}
+
+// TestRestartKeepsSafety restarts a replica from its saved counters and checks
+// the rules DiemBFT's Lemma 2 rests on still hold. Voting in a round and then
+// timing out of it stays allowed, as safe_to_timeout (3.4) permits.
+func TestRestartKeepsSafety(t *testing.T) {
+	t.Run("no second vote in a round voted in", func(t *testing.T) {
+		store := &memStore{}
+		f := newSafetyFixture(1)
+		f.safety.store = store
+		b, _ := round2(f, "b")
+		if f.safety.MakeVote(b, nil) == nil {
+			t.Fatal("MakeVote = nil, want a vote")
+		}
+		g := restarted(store)
+		other, _ := round2(g, "c")
+		if v := g.safety.MakeVote(other, nil); v != nil {
+			t.Error("restarted replica voted a second time in round 2")
+		}
+	})
+
+	t.Run("no vote in a round timed out of", func(t *testing.T) {
+		store := &memStore{}
+		f := newSafetyFixture(1)
+		f.safety.store = store
+		_, qc1 := round2(f, "b")
+		if f.safety.MakeTimeout(2, qc1, nil) == nil {
+			t.Fatal("MakeTimeout = nil, want a timeout")
+		}
+		g := restarted(store)
+		b, _ := round2(g, "b")
+		if v := g.safety.MakeVote(b, nil); v != nil {
+			t.Error("restarted replica voted in round 2 after timing out of it")
+		}
+	})
+
+	t.Run("no timeout below the highest QC round voted on", func(t *testing.T) {
+		store := &memStore{}
+		f := newSafetyFixture(1)
+		f.safety.store = store
+		b, _ := round2(f, "b")
+		if f.safety.MakeVote(b, nil) == nil {
+			t.Fatal("MakeVote = nil, want a vote")
+		}
+		g := restarted(store)
+		if to := g.safety.MakeTimeout(1, GenesisQC(), nil); to != nil {
+			t.Error("restarted replica timed out reporting a QC below the round-1 QC it voted on")
+		}
+	})
+
+	t.Run("a failed save signs nothing and the retry saves", func(t *testing.T) {
+		store := &memStore{err: errors.New("disk full")}
+		f := newSafetyFixture(1)
+		f.safety.store = store
+		if to := f.safety.MakeTimeout(1, GenesisQC(), nil); to != nil {
+			t.Fatal("MakeTimeout signed although the save failed")
+		}
+		store.err = nil
+		if f.safety.MakeTimeout(1, GenesisQC(), nil) == nil {
+			t.Fatal("retried MakeTimeout = nil, want a timeout")
+		}
+		if store.saved.HighestVoteRound != 1 {
+			t.Errorf("saved HighestVoteRound = %d, want 1", store.saved.HighestVoteRound)
 		}
 	})
 }
