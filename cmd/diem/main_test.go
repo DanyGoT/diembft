@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"path/filepath"
 	"testing"
 )
 
@@ -94,6 +95,16 @@ func TestFaultTarget(t *testing.T) {
 				t.Errorf("faultTarget(4) = %d, %v; want %d, error %v", got, err, tt.want, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestStateRejectsLocal: one -state file cannot hold the counters of every
+// replica -local runs, so the run fails before any replica starts.
+func TestStateRejectsLocal(t *testing.T) {
+	// -time ends the run should runLocal start it anyway.
+	o, _ := parse(t, "-local=4", "-time=10ms", "-state="+filepath.Join(t.TempDir(), "state"))
+	if err := o.runLocal(4); err == nil {
+		t.Error("runLocal accepted -state")
 	}
 }
 

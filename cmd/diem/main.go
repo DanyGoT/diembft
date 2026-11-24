@@ -17,6 +17,9 @@
 // round, the point -time also counts from, so the wait for peers is not in it.
 // Through sweep, pass both in -extra-args, for example
 // -extra-args "-insecure-seeded-keys -fault-kill-after=10s -fault-replica=1".
+//
+// -state FILE keeps the replica's safety counters across a restart, so it must
+// sit on a disk that outlives the process.
 package main
 
 import (
@@ -55,6 +58,7 @@ type options struct {
 	sendBuffer     uint
 	recvBuffer     uint
 	faultReplica   int
+	state          string
 }
 
 // newOptions registers the standard benchkit flags and diem's own on fs.
@@ -68,6 +72,7 @@ func newOptions(fs *flag.FlagSet) *options {
 	fs.DurationVar(&o.viewDuration, "view-duration", 0, "round timer α; it grows by α/2 per round since the last commit; 0 picks a default")
 	fs.UintVar(&o.sendBuffer, "send-buffer", 0, "Gorums send queue capacity per peer; 0 picks Gorums' default")
 	fs.UintVar(&o.recvBuffer, "recv-buffer", 0, "Gorums receive queue capacity per stream; 0 picks Gorums' default")
+	fs.StringVar(&o.state, "state", "", "file that keeps this replica's safety counters across restarts; without it a restarted replica can vote twice in a round; not with -local")
 	fs.IntVar(&o.faultReplica, "fault-replica", 1, "the replica -fault-kill-after stops, counted from its first round as -time is; every node gets the same sweep -extra-args, so only this one exits")
 	return o
 }
@@ -147,6 +152,9 @@ func (o *options) writeKeys() error {
 // address before any server exists. Each replica verifies with its own
 // Verifier over the public keys, and they share one reject counter.
 func (o *options) runLocal(n int) error {
+	if o.state != "" {
+		return errors.New("-state is one replica's file and cannot serve -local's replicas")
+	}
 	target, err := o.faultTarget(n)
 	if err != nil {
 		return err
@@ -266,6 +274,7 @@ func (o *options) runOne() error {
 		Measure:       o.std.Options(),
 		DialOptions:   o.dialOptions(),
 		ServerOptions: o.serverOptions(),
+		StateFile:     o.state,
 	})
 	if err != nil {
 		return err
