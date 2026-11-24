@@ -6,7 +6,8 @@ import "github.com/DanyGoT/diembft/proto/diempb"
 //
 // It keeps exactly two counters, the last round voted in and the highest
 // certified round it has endorsed. Everything else it needs arrives as an
-// argument or comes from the ledger.
+// argument or comes from the ledger. With a store, the counters are saved
+// before every vote or timeout that raises them.
 //
 // DiemBFT 3.4 has Safety hold the private key alone and re-check every
 // certificate it signs over (valid_signatures in make_vote and make_timeout),
@@ -23,6 +24,7 @@ type Safety struct {
 
 	highestVoteRound uint64
 	highestQCRound   uint64
+	store            SafetyStore // nil keeps the counters in memory only
 
 	declinedMissingAncestor uint64
 }
@@ -37,12 +39,38 @@ func NewSafety(id uint32, crypto Crypto, ledger *MemLedger, tree *BlockTree) *Sa
 // costs before block sync fills it: see MemLedger.Speculate.
 func (s *Safety) DeclinedMissingAncestor() uint64 { return s.declinedMissingAncestor }
 
-func (s *Safety) increaseHighestVoteRound(round uint64) {
-	s.highestVoteRound = max(round, s.highestVoteRound)
+func (st SafetyState) increaseHighestVoteRound(round uint64) SafetyState {
+	st.HighestVoteRound = max(round, st.HighestVoteRound)
+	return st
 }
 
-func (s *Safety) updateHighestQCRound(qcRound uint64) {
-	s.highestQCRound = max(qcRound, s.highestQCRound)
+func (st SafetyState) updateHighestQCRound(qcRound uint64) SafetyState {
+	st.HighestQCRound = max(qcRound, st.HighestQCRound)
+	return st
+}
+
+func (s *Safety) state() SafetyState {
+	return SafetyState{HighestVoteRound: s.highestVoteRound, HighestQCRound: s.highestQCRound}
+}
+
+func (s *Safety) set(st SafetyState) {
+	s.highestVoteRound, s.highestQCRound = st.HighestVoteRound, st.HighestQCRound
+}
+
+// save stores next, then makes it the counters. The paper saves only in
+// local_timeout_round (3.5, save_consensus_state), but make_vote (3.4) raises
+// highest_vote_round too, so here every raise is saved before anything is
+// signed. A failed save leaves the counters as they were, so the caller signs
+// nothing and a retry saves again.
+func (s *Safety) save(next SafetyState) bool {
+	if next == s.state() {
+		return true
+	}
+	if s.store != nil && s.store.Save(next) != nil {
+		return false
+	}
+	s.set(next)
+	return true
 }
 
 func consecutive(blockRound, round uint64) bool { return round+1 == blockRound }
@@ -105,8 +133,9 @@ func (s *Safety) commitStateIDCandidate(blockRound uint64, qc *diempb.QuorumCert
 }
 
 // MakeVote returns this replica's vote for b, or nil if the safety rules
-// refuse it. The counters move only on the path that produces a vote. b and
-// lastTC must come from a proposal the edge verified.
+// refuse it or the counters cannot be saved. The counters move only on the
+// path that produces a vote. b and lastTC must come from a proposal the edge
+// verified.
 func (s *Safety) MakeVote(b *diempb.Block, lastTC *diempb.TimeoutCert) *diempb.VoteMsg {
 	qcRound := b.GetQc().Round()
 	if !s.safeToVote(b.GetRound(), qcRound, lastTC) {
@@ -123,8 +152,12 @@ func (s *Safety) MakeVote(b *diempb.Block, lastTC *diempb.TimeoutCert) *diempb.V
 		return nil
 	}
 
-	s.updateHighestQCRound(qcRound)          // protect the round we are endorsing
-	s.increaseHighestVoteRound(b.GetRound()) // never vote in this round again
+	next := s.state().
+		updateHighestQCRound(qcRound).         // protect the round we are endorsing
+		increaseHighestVoteRound(b.GetRound()) // never vote in this round again
+	if !s.save(next) {
+		return nil
+	}
 
 	voteInfo := diempb.VoteInfo_builder{
 		Id:          b.GetId(),
@@ -151,16 +184,18 @@ func (s *Safety) MakeVote(b *diempb.Block, lastTC *diempb.TimeoutCert) *diempb.V
 }
 
 // MakeTimeout returns this replica's timeout for round, or nil if the safety
-// rules refuse it. Timing out burns the round for voting too: the counter is
-// raised before the message goes out. highQC and lastTC must be ones the edge
-// verified, or ones this replica built from votes and timeouts the edge
-// verified.
+// rules refuse it or the counters cannot be saved. Timing out burns the round
+// for voting too: the counter is raised before the message goes out. highQC
+// and lastTC must be ones the edge verified, or ones this replica built from
+// votes and timeouts the edge verified.
 func (s *Safety) MakeTimeout(round uint64, highQC *diempb.QuorumCert, lastTC *diempb.TimeoutCert) *diempb.TimeoutInfo {
 	qcRound := highQC.Round()
 	if !s.safeToTimeout(round, qcRound, lastTC) {
 		return nil
 	}
-	s.increaseHighestVoteRound(round)
+	if !s.save(s.state().increaseHighestVoteRound(round)) {
+		return nil
+	}
 	sig, err := sign(s.crypto, s.id, diempb.TimeoutDigest(round, qcRound))
 	if err != nil {
 		return nil

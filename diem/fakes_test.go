@@ -130,3 +130,18 @@ func (c *fakeClock) earliest(by time.Time) *fakeTimer {
 	}
 	return best
 }
+
+// memStore is a SafetyStore that keeps the last state saved, and fails while
+// err is set.
+type memStore struct {
+	saved SafetyState
+	err   error
+}
+
+func (m *memStore) Save(st SafetyState) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.saved = st
+	return nil
+}
