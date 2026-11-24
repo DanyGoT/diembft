@@ -23,11 +23,12 @@ import (
 
 const recvTimeout = 5 * time.Second
 
-// testKeys caches one key set per group size, so every signer a test builds for
-// a group of n verifies the others' signatures.
+// testKeys caches one key set per group size, with its certificates, so every
+// signer a test builds for a group of n verifies the others' signatures.
 var testKeys = map[int]struct {
 	privs map[uint32]*ecdsa.PrivateKey
 	pubs  map[uint32]*ecdsa.PublicKey
+	certs map[uint32][]byte
 }{}
 
 // signer is replica id's signer in a group of n.
@@ -39,7 +40,11 @@ func signer(t *testing.T, id uint32, n int) *diemcrypto.Signer {
 		if err != nil {
 			t.Fatalf("GenerateKeys: %v", err)
 		}
-		ks.privs, ks.pubs = privs, pubs
+		certs, err := diemcrypto.Certificates(privs)
+		if err != nil {
+			t.Fatalf("Certificates: %v", err)
+		}
+		ks.privs, ks.pubs, ks.certs = privs, pubs, certs
 		testKeys[n] = ks
 	}
 	return diemcrypto.New(ks.privs[id], ks.pubs)
@@ -164,14 +169,11 @@ func localServers(t *testing.T, n int, c diem.Crypto, tlsByID map[uint32]*tls.Co
 func tlsConfigs(t *testing.T, n int, certOf func(id uint32) uint32) map[uint32]*tls.Config {
 	t.Helper()
 	signer(t, 1, n) // caches the group's keys
-	privs := testKeys[n].privs
-	certs, err := diemcrypto.Certificates(privs)
-	if err != nil {
-		t.Fatalf("Certificates: %v", err)
-	}
+	privs, certs := testKeys[n].privs, testKeys[n].certs
 	cfgs := make(map[uint32]*tls.Config, n)
 	for id := range privs {
 		c := certOf(id)
+		var err error
 		if cfgs[id], err = diemcrypto.TLSConfig(c, privs[c], certs); err != nil {
 			t.Fatalf("TLSConfig: %v", err)
 		}
@@ -313,6 +315,47 @@ func TestWrongCertificateIsRefused(t *testing.T) {
 	node := peers[0].tr.srv.PeerConfig().Node(2)
 	if !waitFor(recvTimeout, func() bool { return status.Code(node.LastErr()) == codes.Unauthenticated }) {
 		t.Errorf("replica 1's last error from replica 2 = %v, want Unauthenticated", node.LastErr())
+	}
+}
+
+// TestClientNeedsNoCertificate: a client that presents no certificate reaches
+// a TLS group, but cannot pass for a replica: replica 1's vote, sent by the
+// client, is rejected, since the client's stream names no replica.
+func TestClientNeedsNoCertificate(t *testing.T) {
+	const n = 4
+	peers := group(t, n, tlsConfigs(t, n, func(id uint32) uint32 { return id }), record)
+	waitForPeers(t, peers)
+	clientTLS, err := diemcrypto.ClientTLSConfig(testKeys[n].certs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addrs := make(map[uint32]string, n)
+	for _, p := range peers {
+		addrs[p.id] = p.tr.srv.Addr()
+	}
+	dial, _ := security(clientTLS)
+	cfg, closeCfg, err := gorums.NewConfig(nodes(addrs, true), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeCfg)
+
+	ctx, cancel := context.WithTimeout(t.Context(), recvTimeout)
+	defer cancel()
+	if _, err := diempb.NewDiemClient(cfg).Ready(ctx, &emptypb.Empty{}).All(); err != nil {
+		t.Fatalf("a client without a certificate could not reach the group: %v", err)
+	}
+	_, vote, _ := round1(t, 1, n)
+	if err := diempb.NewDiemNodeClient(cfg.Node(2)).Vote(ctx, vote).Send(); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(recvTimeout, func() bool { return peers[1].tr.Counters().Rejected == 1 }) {
+		t.Errorf("Rejected = %d, want the client's vote", peers[1].tr.Counters().Rejected)
+	}
+	select {
+	case m := <-peers[1].q:
+		t.Errorf("replica 2 was handed %v from a client", m)
+	default:
 	}
 }
 

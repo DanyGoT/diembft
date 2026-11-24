@@ -1,7 +1,7 @@
-// Package diemnet is the Gorums transport for DiemBFT. Two files here see the
-// Gorums and gRPC layer, and nothing else below them does: server.go
-// implements the generated server interface and gorums.go calls the generated
-// client functions. The messages cross it as generated diempb types, which
+// Package diemnet is the Gorums transport for DiemBFT. Three files here see
+// the Gorums and gRPC layer, and nothing else below them does: server.go
+// implements the generated server interfaces, and gorums.go and client.go call
+// the generated client functions. The messages cross it as generated diempb types, which
 // package diem consumes directly; check-deps keeps Gorums out of diem.
 package diemnet
 
@@ -42,6 +42,10 @@ type Config struct {
 	ID       uint32
 	Verifier *diem.Verifier
 	Network
+
+	// Submit, if set, answers a client's Submit: it returns once the command
+	// has committed, with the proof, or fails.
+	Submit func(context.Context, *diempb.Command) (*diempb.CommitProof, error)
 }
 
 // Network is where a replica listens and how it reaches its peers.
@@ -159,6 +163,7 @@ type Transport struct {
 	peers    gorums.Config
 	client   diempb.DiemClient
 	handler  *handler
+	clients  clientHandler
 	ready    func() // tells the handler to answer Ready
 	ver      *diem.Verifier
 	rejected *atomic.Uint64
@@ -206,6 +211,7 @@ func New(cfg Config) *Transport {
 		peers:    peers,
 		client:   diempb.NewDiemClient(peers),
 		handler:  &handler{ready: ready},
+		clients:  clientHandler{submit: cfg.Submit},
 		ready:    sync.OnceFunc(func() { close(ready) }),
 		ver:      cfg.Verifier,
 		rejected: cfg.Rejected,
@@ -222,12 +228,16 @@ func (t *Transport) Start(core *diem.Core, mu sync.Locker) {
 	t.serve(t.handler)
 }
 
-// serve registers h and serves. GORUMS: Server.RegisterHandler writes an
-// unsynchronised map that the inbound manager reads once serving starts, so
-// registration comes first, and gorumstest.LocalServers — which serves before
-// it returns — cannot be used for a replica group; -race flags it.
+// serve registers h, and the client service if Config.Submit is set, and
+// serves. GORUMS: Server.RegisterHandler writes an unsynchronised map that the
+// inbound manager reads once serving starts, so registration comes first, and
+// gorumstest.LocalServers — which serves before it returns — cannot be used
+// for a replica group; -race flags it.
 func (t *Transport) serve(h diempb.DiemServer) {
 	diempb.RegisterDiemServer(t.srv, h)
+	if t.clients.submit != nil {
+		diempb.RegisterClientServer(t.srv, t.clients)
+	}
 	t.wg.Go(func() {
 		_ = t.srv.ListenAndServe() // returns when Stop closes the listener
 	})
@@ -240,6 +250,9 @@ func (t *Transport) Stop() {
 	t.srv.Stop()
 	t.wg.Wait()
 }
+
+// Addr is the address the server listens on.
+func (t *Transport) Addr() string { return t.srv.Addr() }
 
 // WaitForPeers blocks until every configured peer has connected, or ctx is done.
 func (t *Transport) WaitForPeers(ctx context.Context) error {

@@ -103,14 +103,27 @@ step through while reading and buys nothing.
 
 * How it uses Gorums
 
-=proto/diempb/diem.proto= defines four RPCs:
+=proto/diempb/diem.proto= defines two services. =Diem= is between replicas:
 
 #+begin_example protobuf
 rpc Proposal(ProposalMsg)   returns (Empty) { option (gorums.multicast)  = true; }
 rpc Vote(VoteMsg)           returns (Empty) { option (gorums.unicast)    = true; }
 rpc Timeout(TimeoutMsg)     returns (Empty) { option (gorums.multicast)  = true; }
 rpc RequestBlock(BlockHash) returns (Block) { option (gorums.quorumcall) = true; }
+rpc Ready(Empty)            returns (Empty) { option (gorums.quorumcall) = true; }
 #+end_example
+
+=Client= is for clients:
+
+#+begin_example protobuf
+rpc Submit(Command) returns (CommitProof) { option (gorums.quorumcall) = true; }
+rpc Ping(Empty)     returns (Empty)       { option (gorums.quorumcall) = true; }
+#+end_example
+
+A client sends =Submit= to every replica and takes the first reply whose proof
+checks out (=verify.go:VerifyCommit=), as block sync does, so it trusts no
+single replica. Only the command's owner proposes it
+(=replica/replica.go:owner=), so it rides in one block.
 
 Votes are *unicast*: DiemBFT 3.1 sends a vote to the leader of the next round
 alone, because that leader is the only replica that will propose over the

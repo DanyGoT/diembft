@@ -1,6 +1,7 @@
 package diemnet
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -98,6 +99,24 @@ func (h *handler) Ready(ctx gorums.ServerContext, _ *emptypb.Empty) (*emptypb.Em
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// clientHandler answers clients. Submit releases its stream at once, so the
+// commands that one client connection carries wait for their commits side by
+// side, not one after another.
+type clientHandler struct {
+	submit func(context.Context, *diempb.Command) (*diempb.CommitProof, error)
+}
+
+var _ diempb.ClientServer = clientHandler{}
+
+func (h clientHandler) Submit(ctx gorums.ServerContext, in *diempb.Command) (*diempb.CommitProof, error) {
+	ctx.Release()
+	return h.submit(ctx, in)
+}
+
+func (clientHandler) Ping(gorums.ServerContext, *emptypb.Empty) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
 }
 
 // block hands a fetched block to the core.
