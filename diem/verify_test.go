@@ -759,3 +759,93 @@ func TestVerifyRejectsMalformed(t *testing.T) {
 		}
 	})
 }
+
+// TestVerifyCommit pins every check a client relies on: a proof passes over a
+// chain with a round gap, and fails when any single part of it is wrong.
+func TestVerifyCommit(t *testing.T) {
+	cmd := diempb.Command_builder{Client: 1, Seq: 1, Payload: []byte("x")}.Build().Encode()
+	other := diempb.Command_builder{Client: 1, Seq: 2}.Build().Encode()
+	b1 := NewBlock(1, 1, [][]byte{other, cmd}, GenesisQC())
+	b1QC := makeQC(voteInfo(b1.GetId(), 1, genesisBlock.GetId(), 0), nil, 1, 2, 3)
+	b3 := NewBlock(3, 3, nil, b1QC) // round 2 timed out
+	commitVote := func(parent []byte, round, parentRound uint64) *diempb.VoteInfo {
+		return voteInfo(hashOf(4), round, parent, parentRound)
+	}
+	valid := func() *diempb.CommitProof {
+		return diempb.CommitProof_builder{
+			Blocks: []*diempb.Block{b1, b3},
+			Qc:     makeQC(commitVote(b3.GetId(), 4, 3), hashOf(9), 1, 2, 3),
+		}.Build()
+	}
+	if !newTestVerifier().VerifyCommit(valid(), cmd) {
+		t.Fatal("VerifyCommit = false for a valid proof")
+	}
+
+	tests := []struct {
+		name   string
+		tamper func(p *diempb.CommitProof) []byte // returns the command to look for
+	}{
+		{"no blocks", func(p *diempb.CommitProof) []byte { p.SetBlocks(nil); return cmd }},
+		{"command not in the first block", func(p *diempb.CommitProof) []byte { return []byte("y") }},
+		{"command only in a later block", func(p *diempb.CommitProof) []byte {
+			p.SetBlocks(p.GetBlocks()[1:])
+			return cmd
+		}},
+		{"block id not recomputed", func(p *diempb.CommitProof) []byte {
+			b := proto.CloneOf(b1)
+			b.SetPayload([][]byte{cmd})
+			p.GetBlocks()[0] = b
+			return cmd
+		}},
+		{"blocks not chained", func(p *diempb.CommitProof) []byte {
+			p.GetBlocks()[1] = NewBlock(3, 3, nil, GenesisQC())
+			p.SetQc(makeQC(commitVote(p.GetBlocks()[1].GetId(), 4, 3), hashOf(9), 1, 2, 3))
+			return cmd
+		}},
+		{"certificate for another parent", func(p *diempb.CommitProof) []byte {
+			p.SetQc(makeQC(commitVote(hashOf(5), 4, 3), hashOf(9), 1, 2, 3))
+			return cmd
+		}},
+		{"certificate for another parent round", func(p *diempb.CommitProof) []byte {
+			p.SetQc(makeQC(commitVote(b3.GetId(), 3, 2), hashOf(9), 1, 2, 3))
+			return cmd
+		}},
+		{"certificate commits nothing", func(p *diempb.CommitProof) []byte {
+			p.SetQc(makeQC(commitVote(b3.GetId(), 4, 3), nil, 1, 2, 3))
+			return cmd
+		}},
+		{"rounds not consecutive", func(p *diempb.CommitProof) []byte {
+			p.SetQc(makeQC(commitVote(b3.GetId(), 5, 3), hashOf(9), 1, 2, 3))
+			return cmd
+		}},
+		{"vote info hash not recomputed", func(p *diempb.CommitProof) []byte {
+			p.GetQc().GetVoteInfo().SetExecStateId(hashOf(6))
+			return cmd
+		}},
+		{"too few signers", func(p *diempb.CommitProof) []byte {
+			p.SetQc(makeQC(commitVote(b3.GetId(), 4, 3), hashOf(9), 1, 2))
+			return cmd
+		}},
+		{"signer twice", func(p *diempb.CommitProof) []byte {
+			p.SetQc(makeQC(commitVote(b3.GetId(), 4, 3), hashOf(9), 1, 2, 2))
+			return cmd
+		}},
+		{"signers out of order", func(p *diempb.CommitProof) []byte {
+			p.SetQc(makeQC(commitVote(b3.GetId(), 4, 3), hashOf(9), 2, 1, 3))
+			return cmd
+		}},
+		{"forged signature", func(p *diempb.CommitProof) []byte {
+			p.GetQc().GetSignatures()[1].SetSig(hashOf(7))
+			return cmd
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := valid()
+			want := tt.tamper(p)
+			if newTestVerifier().VerifyCommit(p, want) {
+				t.Error("VerifyCommit = true, want false")
+			}
+		})
+	}
+}
