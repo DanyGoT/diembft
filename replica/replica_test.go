@@ -71,7 +71,7 @@ func cluster(t *testing.T, n int, round time.Duration, edit func(*Config), dial 
 		if edit != nil {
 			edit(&cfg)
 		}
-		reps[i] = New(cfg)
+		reps[i] = mustNew(t, cfg)
 	}
 
 	run := func(ctx context.Context) {
@@ -86,6 +86,15 @@ func cluster(t *testing.T, n int, round time.Duration, edit func(*Config), dial 
 		wg.Wait()
 	}
 	return reps, run
+}
+
+func mustNew(t *testing.T, cfg Config) *Replica {
+	t.Helper()
+	r, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return r
 }
 
 func depths(reps []*Replica) []int {
@@ -310,7 +319,7 @@ func alone(t *testing.T, startTimeout time.Duration) *Replica {
 	if err := down.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return New(Config{
+	return mustNew(t, Config{
 		ID: 1, Key: privs[1], Keys: pubs,
 		Listen:       "127.0.0.1:0",
 		Peers:        map[uint32]string{1: "127.0.0.1:0", 2: down.Addr().String()},
@@ -407,7 +416,7 @@ func TestStartWaitsForEveryReplica(t *testing.T) {
 		if id == 1 {
 			cfg.DialOptions = []gorums.DialOption{hold}
 		}
-		reps[i] = New(cfg)
+		reps[i] = mustNew(t, cfg)
 		wg.Go(func() { _ = reps[i].Run(ctx) })
 	}
 
@@ -540,7 +549,7 @@ func TestNewRejectsMismatchedPeersAndKeys(t *testing.T) {
 		}()
 		c := cfg()
 		c.Peers = map[uint32]string{1: "a:1", 2: "b:2", 3: "c:3"}
-		New(c)
+		_, _ = New(c)
 	})
 
 	t.Run("own key missing", func(t *testing.T) {
@@ -551,6 +560,6 @@ func TestNewRejectsMismatchedPeersAndKeys(t *testing.T) {
 		}()
 		c := cfg()
 		c.ID = 9
-		New(c)
+		_, _ = New(c)
 	})
 }

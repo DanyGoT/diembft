@@ -184,14 +184,17 @@ func (o *options) localCluster(n int) ([]*replica.Replica, func(), error) {
 	reps := make([]*replica.Replica, n)
 	for i := range n {
 		id := uint32(i + 1)
-		reps[i] = replica.New(replica.Config{
+		if reps[i], err = replica.New(replica.Config{
 			ID: id, Key: privs[id], Keys: pubs,
 			Batch:        o.batch,
 			RoundTimeout: o.viewDuration,
 			Measure:      o.std.Options(),
 			Server:       srvs[i],
 			Rejected:     rejected,
-		})
+		}); err != nil {
+			stop()
+			return nil, nil, err
+		}
 	}
 	return reps, stop, nil
 }
@@ -255,7 +258,7 @@ func (o *options) runOne() error {
 	for i, addr := range addrs {
 		peers[uint32(i+1)] = addr
 	}
-	return o.runAll(len(addrs), []*replica.Replica{replica.New(replica.Config{
+	r, err := replica.New(replica.Config{
 		ID: id, Peers: peers, Listen: self, TLS: tlsConfig,
 		Key: priv, Keys: pubs,
 		Batch:         o.batch,
@@ -263,7 +266,11 @@ func (o *options) runOne() error {
 		Measure:       o.std.Options(),
 		DialOptions:   o.dialOptions(),
 		ServerOptions: o.serverOptions(),
-	})}, target)
+	})
+	if err != nil {
+		return err
+	}
+	return o.runAll(len(addrs), []*replica.Replica{r}, target)
 }
 
 // runAll runs reps, this process's share of an n-replica cluster, and their
