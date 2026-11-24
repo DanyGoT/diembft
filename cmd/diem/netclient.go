@@ -26,9 +26,15 @@ import (
 // not committed by then is a failed op, and the client moves on to its next.
 const defaultCallTimeout = 10 * time.Second
 
+// failPause is how long a client waits after a failed call. A call fails at
+// once while its connections are down, and a client that retried at once
+// would spin through thousands of failed ops.
+const failPause = 100 * time.Millisecond
+
 // runClient runs -workers network clients against the replicas in -remotes
-// for -time, or until interrupted, and reports their submit-to-commit latency,
-// timed until the proof has been checked. With -ping, an op is an empty call.
+// for -time once every replica answers, or until interrupted, and reports
+// their submit-to-commit latency, timed until the proof has been checked.
+// With -ping, an op is an empty call.
 func (o *options) runClient() error {
 	addrs, err := o.addresses()
 	if err != nil {
@@ -54,6 +60,9 @@ func (o *options) runClient() error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+	if err := c.Ready(ctx); err != nil {
+		return err
+	}
 	if d := o.std.Duration; d > 0 {
 		ctx, cancel = context.WithTimeout(ctx, d)
 		defer cancel()
@@ -99,6 +108,11 @@ func (o *options) netClient(ctx context.Context, c *diemnet.Client, m *benchkit.
 		case err != nil:
 			slog.Debug("call failed", "client", id, "seq", seq, "err", err)
 			m.RecordError()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(failPause):
+			}
 		default:
 			m.Stats.AddLatency(time.Since(start))
 		}
