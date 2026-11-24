@@ -74,8 +74,8 @@ type Config struct {
 type Replica struct {
 	id         uint32
 	validators []uint32
-	core *diem.Core
-	net  *diemnet.Transport
+	core       *diem.Core
+	net        *diemnet.Transport
 
 	// mu serializes every call into the core: inbound messages, fetched
 	// blocks and the round timer. Gorums runs one sender's handlers in order,
