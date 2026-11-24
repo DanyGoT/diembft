@@ -4,6 +4,7 @@ package replica
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -21,7 +22,12 @@ const (
 	defaultRoundTimeout = 100 * time.Millisecond
 	defaultBatch        = 64
 	defaultPoolSize     = 4096
+	defaultStartTimeout = 30 * time.Second
 )
+
+// ErrStartTimeout is what Run returns when the replicas are not all ready
+// within Config.StartTimeout.
+var ErrStartTimeout = errors.New("replica: not every replica was ready before the start timeout")
 
 // Config is everything a replica needs.
 type Config struct {
@@ -41,6 +47,10 @@ type Config struct {
 
 	// RoundTimeout is the round timer's α; its β is half of it.
 	RoundTimeout time.Duration
+
+	// StartTimeout bounds Run's wait for its peers and for every replica to be
+	// ready. 0 picks a default.
+	StartTimeout time.Duration
 
 	// Measure configures the measurement taken from core start. Its Duration
 	// bounds the run; 0 runs until ctx is done.
@@ -70,16 +80,20 @@ type Replica struct {
 	proposeToCommit time.Duration
 	ownCommits      uint64
 
-	measure benchkit.Options
-	m       *benchkit.Measurement
-	result  *benchkit.Result
-	started chan struct{}
+	measure      benchkit.Options
+	startTimeout time.Duration
+	m            *benchkit.Measurement
+	result       *benchkit.Result
+	started      chan struct{}
 }
 
 // New wires a replica.
 func New(cfg Config) *Replica {
 	if cfg.RoundTimeout == 0 {
 		cfg.RoundTimeout = defaultRoundTimeout
+	}
+	if cfg.StartTimeout <= 0 {
+		cfg.StartTimeout = defaultStartTimeout
 	}
 	if cfg.Batch <= 0 {
 		cfg.Batch = defaultBatch
@@ -100,11 +114,12 @@ func New(cfg Config) *Replica {
 	validators := slices.Sorted(maps.Keys(cfg.Keys))
 	signer := diemcrypto.New(cfg.Key, cfg.Keys)
 	r := &Replica{
-		id:       cfg.ID,
-		pool:     &pool{batch: cfg.Batch, size: cfg.PoolSize},
-		onCommit: cfg.OnCommit,
-		measure:  cfg.Measure,
-		started:  make(chan struct{}),
+		id:           cfg.ID,
+		pool:         &pool{batch: cfg.Batch, size: cfg.PoolSize},
+		onCommit:     cfg.OnCommit,
+		measure:      cfg.Measure,
+		startTimeout: cfg.StartTimeout,
+		started:      make(chan struct{}),
 	}
 	ledger := diem.NewMemLedger()
 	ledger.OnCommit = r.commit
@@ -219,12 +234,18 @@ func (r *Replica) Run(ctx context.Context) error {
 }
 
 // start waits until this replica's peers are connected and every replica is
-// ready.
+// ready, for at most the start timeout, past which it returns ErrStartTimeout.
 func (r *Replica) start(ctx context.Context) error {
-	if err := r.net.WaitForPeers(ctx); err != nil {
-		return err
+	ctx, cancel := context.WithTimeoutCause(ctx, r.startTimeout, ErrStartTimeout)
+	defer cancel()
+	err := r.net.WaitForPeers(ctx)
+	if err == nil {
+		err = r.net.Barrier(ctx)
 	}
-	return r.net.Barrier(ctx)
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	return err
 }
 
 // Result is the run's measurement: an op is a committed command submitted to

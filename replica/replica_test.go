@@ -296,10 +296,9 @@ func TestSubmitCommitsOnEveryReplica(t *testing.T) {
 	}
 }
 
-// TestStartedWaitsForPeers pins that Started, which cmd/diem counts
-// -fault-kill-after from, closes only once every peer is connected: not while
-// one is down, and once the whole cluster is up.
-func TestStartedWaitsForPeers(t *testing.T) {
+// alone is replica 1 of 2, whose peer never comes up.
+func alone(t *testing.T, startTimeout time.Duration) *Replica {
+	t.Helper()
 	privs, pubs, err := diemcrypto.GenerateKeys(2)
 	if err != nil {
 		t.Fatalf("GenerateKeys: %v", err)
@@ -311,11 +310,35 @@ func TestStartedWaitsForPeers(t *testing.T) {
 	if err := down.Close(); err != nil {
 		t.Fatal(err)
 	}
-	lone := New(Config{
+	return New(Config{
 		ID: 1, Key: privs[1], Keys: pubs,
-		Listen: "127.0.0.1:0",
-		Peers:  map[uint32]string{1: "127.0.0.1:0", 2: down.Addr().String()},
+		Listen:       "127.0.0.1:0",
+		Peers:        map[uint32]string{1: "127.0.0.1:0", 2: down.Addr().String()},
+		StartTimeout: startTimeout,
 	})
+}
+
+// TestRunFailsAtStartTimeout: a replica whose peer never comes up gives up at
+// the start timeout instead of waiting for ever.
+func TestRunFailsAtStartTimeout(t *testing.T) {
+	lone := alone(t, 200*time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- lone.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStartTimeout) {
+			t.Fatalf("Run returned %v, want ErrStartTimeout", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run still waiting 10 s past a 200 ms start timeout")
+	}
+}
+
+// TestStartedWaitsForPeers pins that Started, which cmd/diem counts
+// -fault-kill-after from, closes only once every peer is connected: not while
+// one is down, and once the whole cluster is up.
+func TestStartedWaitsForPeers(t *testing.T) {
+	lone := alone(t, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	if err := lone.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
