@@ -121,13 +121,13 @@ func New(cfg Config) (*Replica, error) {
 	var state diem.SafetyState
 	var store diem.SafetyStore
 	if cfg.StateFile != "" {
+		var fs *fileStore
 		var err error
-		if state, err = loadState(cfg.StateFile); err != nil {
+		if state, fs, err = openState(cfg.StateFile); err != nil {
 			return nil, err
 		}
-		// Saving the loaded state back makes a path that cannot be written fail
+		// Saving the loaded state back makes a disk that cannot be written fail
 		// here rather than silence the replica at its first vote.
-		fs := fileStore{cfg.StateFile}
 		if err := fs.save(state); err != nil {
 			return nil, err
 		}
