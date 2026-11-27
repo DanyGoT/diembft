@@ -63,6 +63,11 @@ func openState(path string) (diem.SafetyState, *fileStore, error) {
 	if err != nil {
 		return zero, nil, err
 	}
+	// create's rename survives a power loss only once the directory is synced.
+	// Every open syncs it, so a crash between the two is covered too.
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return zero, nil, errors.Join(err, f.Close())
+	}
 	b := make([]byte, fileSize+1)
 	if n, err := f.ReadAt(b, 0); n != fileSize {
 		err = fmt.Errorf("replica: state file %s holds %d bytes, want %d: %w", path, n, fileSize, err)
@@ -87,8 +92,7 @@ func newer(a, b diem.SafetyState) bool {
 }
 
 // create writes a state file holding the zero state through a temporary file,
-// renamed into place and synced, so a crash leaves either no file or a whole
-// one.
+// renamed into place, so a crash leaves either no file or a whole one.
 func create(path string) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
@@ -106,6 +110,10 @@ func create(path string) error {
 	if err != nil {
 		return errors.Join(err, os.Remove(f.Name()))
 	}
+	return nil
+}
+
+func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
 		return err
